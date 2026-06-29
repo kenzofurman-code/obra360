@@ -1,0 +1,28 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: #0f1012;
+    color: #cdd8e3;
+  }
+
+  /* Video.js 360 canvas ocupa 100% do container */
+  .video-js {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
+  .vjs-tech {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+}

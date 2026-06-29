@@ -1,0 +1,10 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Visitas: leitura/escrita livre (app interno de obra, sem auth)
+    // Para produção: adicionar autenticação Firebase Auth
+    match /visitas/{visitaId} {
+      allow read, write: if true;
+    }
+  }
+}
