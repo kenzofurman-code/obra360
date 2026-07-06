@@ -35,7 +35,8 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Inicia uma sessão de upload TUS diretamente no endpoint /stream do Cloudflare
+    // Inicia uma sessão de upload TUS no Cloudflare
+    // Passamos a origem permitida no body para evitar erros de CORS no navegador
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${accountId}/stream`,
       {
@@ -44,9 +45,12 @@ export default async function handler(req, res) {
           'Authorization': `Bearer ${token}`,
           'Tus-Resumable': '1.0.0',
           'Upload-Length': String(fileSize),
-          // maxDurationSeconds: 3600 (1 hora) codificado em base64 (MzYwMA==)
-          'Upload-Metadata': 'maxDurationSeconds MzYwMA==',
-        }
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          maxDurationSeconds: 3600, // Limite de 1 hora
+          allowedOrigins: ['*'],    // Permite uploads de qualquer origem para evitar bloqueio CORS
+        })
       }
     );
 
