@@ -2,6 +2,7 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { criarVisita } from '../lib/visitas'
+import * as tus from 'tus-js-client'
 
 const PAVIMENTOS = [
   'Térreo', 'Mezanino',
@@ -11,6 +12,7 @@ const PAVIMENTOS = [
 
 export default function Upload() {
   const navigate = useNavigate()
+  const [uploadMethod, setUploadMethod] = useState('direct') // 'direct' | 'manual'
   const [form, setForm] = useState({
     pavimento: '1° Pavimento',
     hls_url: '',
@@ -18,15 +20,97 @@ export default function Upload() {
     planta_url: '',
     duracao_segundos: '',
   })
+  
+  // Estados para Upload Direto
+  const [videoFile, setVideoFile] = useState(null)
+  const [uploadProgress, setUploadProgress] = useState(0)
+  const [uploading, setUploading] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState('')
+  
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState('')
   const [activeStep, setActiveStep] = useState(1) // 1, 2, 3
 
   function set(k, v) { setForm(prev => ({ ...prev, [k]: v })) }
 
-  async function salvar() {
+  // 1. Upload Direto para Cloudflare Stream via Tus
+  async function iniciarUploadDireto() {
+    if (!videoFile) {
+      setErro('Selecione um arquivo de vídeo .mp4 para fazer o upload.')
+      return
+    }
+    setUploading(true)
+    setErro('')
+    setUploadStatus('Solicitando credenciais de upload seguro...')
+
+    try {
+      // Requisita URL assinada do Cloudflare a partir do nosso backend serverless
+      const response = await fetch('/api/get-upload-url', {
+        method: 'POST',
+      })
+      
+      if (!response.ok) {
+        const errData = await response.json()
+        throw new Error(errData.error || 'Erro ao gerar credenciais de upload.')
+      }
+      
+      const { uploadURL, uid, accountId } = await response.json()
+      setUploadStatus('Iniciando envio para o Cloudflare Stream...')
+
+      // Cria a instância de Upload do Tus
+      const upload = new tus.Upload(videoFile, {
+        endpoint: uploadURL,
+        retryDelays: [0, 3000, 5000, 10000, 20000],
+        metadata: {
+          filename: videoFile.name,
+          filetype: videoFile.type,
+        },
+        onError: function (error) {
+          console.error('Erro no upload Tus:', error)
+          setErro('Falha no envio do vídeo: ' + error.message)
+          setUploading(false)
+        },
+        onProgress: function (bytesUploaded, bytesTotal) {
+          const percentage = ((bytesUploaded / bytesTotal) * 100).toFixed(0)
+          setUploadProgress(parseInt(percentage))
+          setUploadStatus(`Enviando vídeo: ${percentage}%`)
+        },
+        onSuccess: async function () {
+          setUploadStatus('Vídeo enviado com sucesso! Salvando vistoria...')
+          
+          // Formatos de URLs geradas automaticamente pelo Cloudflare Stream
+          const hlsUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/manifest/video.m3u8`
+          const thumbnailUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`
+
+          try {
+            const id = await criarVisita({
+              pavimento: form.pavimento,
+              hls_url: hlsUrl,
+              thumbnail_url: thumbnailUrl,
+              planta_url: form.planta_url.trim() || null,
+              duracao_segundos: parseInt(form.duracao_segundos) || 0,
+            })
+            navigate(`/visita/${id}`)
+          } catch (e) {
+            setErro('Vídeo enviado, mas falha ao salvar visita no Firebase: ' + e.message)
+            setUploading(false)
+          }
+        },
+      })
+
+      // Inicia o upload
+      upload.start()
+
+    } catch (e) {
+      setErro('Erro no processo de upload: ' + e.message)
+      setUploading(false)
+    }
+  }
+
+  // 2. Criação com link manual (ex: Cloudflare R2 direto)
+  async function salvarManual() {
     if (!form.hls_url.trim()) {
-      setErro('Informe a URL do arquivo index.m3u8 no Cloudflare R2.')
+      setErro('Informe a URL do arquivo index.m3u8.')
       return
     }
     if (!form.hls_url.endsWith('.m3u8')) {
@@ -66,47 +150,118 @@ export default function Upload() {
         </div>
       </header>
 
-      {/* Main Grid: Form on the Left, Setup Guide on the Right */}
+      {/* Main Grid */}
       <main className="flex-1 max-w-4xl mx-auto w-full px-6 py-8 grid grid-cols-1 md:grid-cols-12 gap-8 items-start">
         
         {/* Left Form: 7 cols */}
         <div className="md:col-span-7 space-y-5 bg-concreto-900 border border-concreto-700/60 p-6 rounded-xl shadow-lg">
-          <h2 className="text-sm font-semibold text-aco-100 border-b border-concreto-800 pb-2">Informações Básicas</h2>
+          <div className="flex items-center justify-between border-b border-concreto-800 pb-2">
+            <h2 className="text-sm font-semibold text-aco-100">Configurações da Vistoria</h2>
+            
+            {/* Seletor de método de upload */}
+            <div className="flex border border-concreto-700 rounded bg-concreto-950/40 p-0.5 text-[9px] font-mono">
+              <button
+                onClick={() => !uploading && !salvando && setUploadMethod('direct')}
+                className={`px-2 py-1 rounded transition-all ${
+                  uploadMethod === 'direct' ? 'bg-sinal-500 text-concreto-950 font-bold' : 'text-aco-400 hover:text-aco-200'
+                }`}
+                disabled={uploading || salvando}
+              >
+                Upload MP4
+              </button>
+              <button
+                onClick={() => !uploading && !salvando && setUploadMethod('manual')}
+                className={`px-2 py-1 rounded transition-all ${
+                  uploadMethod === 'manual' ? 'bg-sinal-500 text-concreto-950 font-bold' : 'text-aco-400 hover:text-aco-200'
+                }`}
+                disabled={uploading || salvando}
+              >
+                Link Manual
+              </button>
+            </div>
+          </div>
 
           <Field label="Pavimento">
             <select
               value={form.pavimento}
               onChange={e => set('pavimento', e.target.value)}
-              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 focus:outline-none focus:border-sinal-500 transition-colors"
+              disabled={uploading || salvando}
+              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
             >
               {PAVIMENTOS.map(p => <option key={p}>{p}</option>)}
             </select>
           </Field>
 
-          <Field label="URL do HLS (index.m3u8 no Cloudflare R2)" required hint="Cole a URL pública do index.m3u8">
-            <input
-              value={form.hls_url}
-              onChange={e => set('hls_url', e.target.value)}
-              placeholder="https://pub-xxx.r2.dev/visitas/terreo/index.m3u8"
-              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 font-mono focus:outline-none focus:border-sinal-500 transition-colors"
-            />
-          </Field>
+          {/* Renderização Condicional de Entrada do Vídeo */}
+          {uploadMethod === 'direct' ? (
+            <Field label="Arquivo de Vídeo MP4 (360°)" required hint="Selecione o arquivo equiretangular da Insta360 X3">
+              {uploading ? (
+                <div className="bg-concreto-800/40 border border-concreto-750 rounded-lg p-5 flex flex-col items-center gap-3">
+                  <div className="w-full bg-concreto-950 rounded-full h-2 overflow-hidden border border-concreto-800">
+                    <div
+                      className="bg-sinal-500 h-full rounded-full transition-all duration-300 shadow-sm"
+                      style={{ width: `${uploadProgress}%` }}
+                    />
+                  </div>
+                  <p className="text-[10px] font-mono text-sinal-400 animate-pulse">{uploadStatus}</p>
+                </div>
+              ) : (
+                <div className="relative border-2 border-dashed border-concreto-700/80 hover:border-sinal-500/50 rounded-lg p-6 bg-concreto-800/20 text-center transition-all cursor-pointer">
+                  <input
+                    type="file"
+                    accept="video/mp4"
+                    onChange={e => {
+                      const file = e.target.files[0]
+                      if (file) {
+                        setVideoFile(file)
+                        setErro('')
+                      }
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <div className="flex flex-col items-center gap-2">
+                    <span className="text-2xl">📹</span>
+                    <p className="text-xs text-aco-200 font-semibold">
+                      {videoFile ? videoFile.name : 'Clique ou arraste o arquivo MP4 aqui'}
+                    </p>
+                    {videoFile && (
+                      <p className="text-[10px] text-aco-400 font-mono">
+                        ({(videoFile.size / (1024 * 1024)).toFixed(1)} MB)
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </Field>
+          ) : (
+            <>
+              <Field label="URL do HLS (index.m3u8)" required hint="Endereço do manifesto HLS ex: no Cloudflare R2">
+                <input
+                  value={form.hls_url}
+                  onChange={e => set('hls_url', e.target.value)}
+                  placeholder="https://pub-xxx.r2.dev/visitas/terreo/index.m3u8"
+                  className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 font-mono focus:outline-none focus:border-sinal-500 transition-colors"
+                />
+              </Field>
+
+              <Field label="URL de thumbnail (opcional)" hint="Imagem de capa do card">
+                <input
+                  value={form.thumbnail_url}
+                  onChange={e => set('thumbnail_url', e.target.value)}
+                  placeholder="https://pub-xxx.r2.dev/visitas/terreo/thumb.jpg"
+                  className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors"
+                />
+              </Field>
+            </>
+          )}
 
           <Field label="URL da planta PNG" hint="Upload da imagem da planta baixa (opcional)">
             <input
               value={form.planta_url}
               onChange={e => set('planta_url', e.target.value)}
+              disabled={uploading || salvando}
               placeholder="https://pub-xxx.r2.dev/plantas/terreo.png"
-              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors"
-            />
-          </Field>
-
-          <Field label="URL de thumbnail (opcional)" hint="Imagem de capa do card">
-            <input
-              value={form.thumbnail_url}
-              onChange={e => set('thumbnail_url', e.target.value)}
-              placeholder="https://pub-xxx.r2.dev/visitas/terreo/thumb.jpg"
-              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors"
+              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
             />
           </Field>
 
@@ -115,28 +270,29 @@ export default function Upload() {
               type="number"
               value={form.duracao_segundos}
               onChange={e => set('duracao_segundos', e.target.value)}
+              disabled={uploading || salvando}
               placeholder="ex: 180"
-              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors"
+              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
             />
           </Field>
 
           {erro && <p className="text-alerta text-xs font-mono">{erro}</p>}
 
           <button
-            onClick={salvar}
-            disabled={salvando}
+            onClick={uploadMethod === 'direct' ? iniciarUploadDireto : salvarManual}
+            disabled={uploading || salvando}
             className="w-full bg-sinal-500 hover:bg-sinal-400 active:scale-[0.99] disabled:opacity-50 text-concreto-950 font-semibold text-xs py-3 rounded-lg transition-all shadow-md shadow-sinal-500/10"
           >
-            {salvando ? 'Salvando...' : 'Criar Vistoria e Mapear'}
+            {uploading ? 'Enviando Vídeo...' : salvando ? 'Salvando Vistoria...' : 'Criar Vistoria e Iniciar Mapeamento'}
           </button>
         </div>
 
         {/* Right Instructions: 5 cols */}
         <div className="md:col-span-5 space-y-4">
           <div className="bg-concreto-900 border border-concreto-700/60 p-5 rounded-xl shadow-lg space-y-4">
-            <h2 className="text-xs font-semibold text-aco-200 uppercase tracking-wider font-mono">Preparar Vídeo 360°</h2>
-            <p className="text-[11px] text-aco-400 leading-relaxed leading-normal">
-              Para reproduzir o vídeo de forma fluida e sem travamentos, siga estes 3 passos básicos:
+            <h2 className="text-xs font-semibold text-aco-200 uppercase tracking-wider font-mono">Guia de Preparação</h2>
+            <p className="text-[11px] text-aco-400 leading-relaxed">
+              O upload automático processa tudo de forma integrada. Veja abaixo as etapas:
             </p>
 
             {/* Interactive Steps */}
@@ -155,7 +311,7 @@ export default function Upload() {
                 </button>
                 {activeStep === 1 && (
                   <div className="p-3 bg-concreto-950/40 text-aco-400 leading-relaxed border-t border-concreto-800">
-                    Abra o arquivo `.insv` no **Insta360 Studio** no PC. Ative a estabilização FlowState e exporte em **MP4 Equiretangular** na resolução **4K (3840x1920)** ou inferior para garantir fluidez na web.
+                    Abra o arquivo `.insv` no **Insta360 Studio**. Exporte em **MP4 Equiretangular** na resolução **4K** ou **1080p**. Ative a estabilização FlowState para obter uma caminhada suave.
                   </div>
                 )}
               </div>
@@ -168,15 +324,12 @@ export default function Upload() {
                     activeStep === 2 ? 'bg-concreto-800 text-sinal-400' : 'bg-concreto-900 text-aco-300 hover:bg-concreto-800/40'
                   }`}
                 >
-                  <span>2. Fragmentar em HLS (FFmpeg)</span>
+                  <span>2. Como funciona o upload</span>
                   <span>{activeStep === 2 ? '▼' : '►'}</span>
                 </button>
                 {activeStep === 2 && (
-                  <div className="p-3 bg-concreto-950/40 text-aco-400 space-y-2 border-t border-concreto-800">
-                    <p>Converta o arquivo para HLS (cria a playlist m3u8 e segmentos ts):</p>
-                    <code className="block bg-concreto-950 p-2 rounded text-[10px] text-green-400 leading-normal overflow-x-auto whitespace-pre">
-                      ffmpeg -i video.mp4 -codec: copy -hls_time 4 -hls_list_size 0 -f hls index.m3u8
-                    </code>
+                  <div className="p-3 bg-concreto-950/40 text-aco-400 space-y-2 border-t border-concreto-800 leading-relaxed">
+                    <p>O site solicita uma credencial temporária para o backend (sem expor suas chaves de segurança) e envia o MP4 em blocos estáveis direto para o Cloudflare Stream.</p>
                   </div>
                 )}
               </div>
@@ -189,14 +342,12 @@ export default function Upload() {
                     activeStep === 3 ? 'bg-concreto-800 text-sinal-400' : 'bg-concreto-900 text-aco-300 hover:bg-concreto-800/40'
                   }`}
                 >
-                  <span>3. Hospedar no Cloudflare R2</span>
+                  <span>3. Transcodificação Automática</span>
                   <span>{activeStep === 3 ? '▼' : '►'}</span>
                 </button>
                 {activeStep === 3 && (
                   <div className="p-3 bg-concreto-950/40 text-aco-400 space-y-2 border-t border-concreto-800 leading-relaxed">
-                    <p>1. Crie um bucket no **R2** e ative **Public Access**.</p>
-                    <p>2. Configure a regra **CORS** nas configurações do bucket para liberar as requisições WebGL.</p>
-                    <p>3. Faça upload de toda a pasta (index.m3u8 + todos os arquivos .ts).</p>
+                    <p>O Cloudflare Stream se encarrega de converter o MP4 para HLS adaptativo e gerar imagens de preview em tempo real. O player de vídeo da Vistoria funcionará imediatamente.</p>
                   </div>
                 )}
               </div>
