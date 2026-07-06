@@ -21,6 +21,13 @@ export default function Visita() {
   const [tamanhoMapa, setTamanhoMapa] = useState('md') // 'sm' | 'md' | 'lg' | 'minimized'
   const [menuAberto, setMenuAberto] = useState(false) // se a gaveta lateral de edição está aberta
 
+  // Controles do Vídeo e Ajustes da Passarela
+  const [tocando, setTocando] = useState(false)
+  const [lineOpacity, setLineOpacity] = useState(79) // 79% (conforme mockup)
+  const [lineThickness, setLineThickness] = useState(0.6) // 0.6x (conforme mockup)
+  const [mostrarConfigPopup, setMostrarConfigPopup] = useState(false)
+  const [velocidade, setVelocidade] = useState(1) // 1x, 1.5x, 2x
+
   // Estados adicionais para calibração, sobreposição e azimute
   const [headingOffset, setHeadingOffset] = useState(0)
   const [modoCalibrarAncoras, setModoCalibrarAncoras] = useState(null) // null | 'ancora1' | 'ancora2'
@@ -39,6 +46,19 @@ export default function Visita() {
     tempoAtual, duracao, posicao, waypointAtivo, player,
     registrarPlayer, pularParaWaypoint, pularParaCoordenada,
   } = useVideoSync(waypoints)
+
+  // Sincroniza estado de play/pause do player com o React
+  useEffect(() => {
+    if (!player) return
+    const onPlay = () => setTocando(true)
+    const onPause = () => setTocando(false)
+    player.on('play', onPlay)
+    player.on('pause', onPause)
+    return () => {
+      player.off('play', onPlay)
+      player.off('pause', onPause)
+    }
+  }, [player])
 
   // Carrega lista de visitas para sobreposição (exclui a visita atual)
   useEffect(() => {
@@ -75,6 +95,34 @@ export default function Visita() {
     setToast({ msg, tipo })
     setTimeout(() => setToast(null), 3000)
   }
+
+  // Funções de Controle do Player de Vídeo
+  const togglePlay = useCallback(() => {
+    if (!player) return
+    if (player.paused()) {
+      player.play()
+    } else {
+      player.pause()
+    }
+  }, [player])
+
+  const frameAnterior = useCallback(() => {
+    if (!player) return
+    // Pula 0.5s para trás (simula voltar um frame/trecho no passeio)
+    player.currentTime(Math.max(0, player.currentTime() - 0.5))
+  }, [player])
+
+  const proximoFrame = useCallback(() => {
+    if (!player) return
+    // Pula 0.5s para frente (simula avançar um frame/trecho)
+    player.currentTime(Math.min(player.duration(), player.currentTime() + 0.5))
+  }, [player])
+
+  const mudarVelocidade = useCallback((v) => {
+    if (!player) return
+    player.playbackRate(v)
+    setVelocidade(v)
+  }, [player])
 
   // Clique na planta (Canvas)
   const handleClickCoordenada = useCallback((x, y) => {
@@ -264,14 +312,127 @@ export default function Visita() {
             hlsUrl={visita.hls_url}
             onReady={registrarPlayer}
             autoplay={false}
+            waypoints={waypoints}
+            posicao={posicao}
+            headingOffset={headingOffset}
+            lineOpacity={lineOpacity}
+            lineThickness={lineThickness}
           />
         </div>
+
+        {/* CONTROL BAR INTERATIVA NO RODAPÉ (Z-INDEX 20) */}
+        <div className="absolute bottom-4 left-1/2 -translate-x-1/2 z-20 flex items-center gap-4 bg-concreto-900/90 backdrop-blur-md border border-concreto-700/80 rounded-xl px-4 py-2 shadow-2xl shrink-0">
+          <button
+            onClick={frameAnterior}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-aco-300 hover:text-sinal-400 hover:bg-concreto-800 transition-all font-mono font-bold text-sm"
+            title="Voltar 0.5s (Frame anterior)"
+          >
+            ‹
+          </button>
+          <button
+            onClick={togglePlay}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-aco-200 hover:text-sinal-400 hover:bg-concreto-800 transition-all text-xs"
+            title={tocando ? 'Pausar' : 'Iniciar'}
+          >
+            {tocando ? '⏸' : '▶'}
+          </button>
+          <button
+            onClick={proximoFrame}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-aco-300 hover:text-sinal-400 hover:bg-concreto-800 transition-all font-mono font-bold text-sm"
+            title="Avançar 0.5s (Próximo frame)"
+          >
+            ›
+          </button>
+          <div className="w-px h-5 bg-concreto-800" />
+          <button
+            onClick={() => setMostrarConfigPopup(p => !p)}
+            className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
+              mostrarConfigPopup ? 'text-sinal-400 bg-concreto-800' : 'text-aco-400 hover:text-aco-200 hover:bg-concreto-800'
+            }`}
+            title="Ajustes de Exibição"
+          >
+            ⚙️
+          </button>
+        </div>
+
+        {/* POPUP FLUTUANTE DE CONFIGURAÇÕES (Z-INDEX 30) */}
+        {mostrarConfigPopup && (
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-30 bg-concreto-900/95 backdrop-blur-md border border-concreto-700/80 rounded-xl p-4 w-[280px] shadow-2xl flex flex-col gap-4 text-xs font-sans">
+            <div className="flex items-center justify-between border-b border-concreto-800 pb-1.5 shrink-0">
+              <span className="font-mono text-[9px] text-aco-300 font-semibold uppercase tracking-wider">Ajustes da Passarela</span>
+              <button
+                onClick={() => setMostrarConfigPopup(false)}
+                className="text-aco-400 hover:text-alerta text-[10px] font-mono"
+              >
+                Fechar
+              </button>
+            </div>
+
+            {/* Playback Speed */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-semibold text-aco-300 font-mono block">Velocidade de Reprodução</span>
+              <div className="grid grid-cols-3 gap-1.5">
+                {[0.5, 1.0, 1.5].map(v => (
+                  <button
+                    key={v}
+                    onClick={() => mudarVelocidade(v)}
+                    className={`py-1 rounded border font-mono text-[10px] transition-all ${
+                      velocidade === v
+                        ? 'bg-sinal-500 text-concreto-950 font-bold border-sinal-500'
+                        : 'bg-concreto-800 border-concreto-700 text-aco-400 hover:text-aco-200'
+                    }`}
+                  >
+                    {v}x
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Opacity */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between font-mono text-[11px]">
+                <span className="text-aco-300">Opacidade</span>
+                <span className="text-sinal-400 font-semibold">{lineOpacity}%</span>
+              </div>
+              <input
+                type="range"
+                min="0"
+                max="100"
+                value={lineOpacity}
+                onChange={e => setLineOpacity(parseInt(e.target.value))}
+                className="w-full h-1 bg-concreto-800 rounded appearance-none cursor-pointer accent-sinal-500"
+              />
+            </div>
+
+            {/* Thickness */}
+            <div className="space-y-1.5">
+              <div className="flex justify-between font-mono text-[11px]">
+                <span className="text-aco-300">Espessura</span>
+                <span className="text-sinal-400 font-semibold">{lineThickness}x</span>
+              </div>
+              <input
+                type="range"
+                min="1"
+                max="25"
+                value={lineThickness * 10}
+                onChange={e => setLineThickness(parseInt(e.target.value) / 10)}
+                className="w-full h-1 bg-concreto-800 rounded appearance-none cursor-pointer accent-sinal-500"
+              />
+            </div>
+
+            {/* Footer Info */}
+            <div className="border-t border-concreto-800 pt-2.5 text-[9px] font-mono text-aco-400 flex flex-col gap-0.5 leading-normal">
+              <span>📅 Realizado em: {visita.data?.toDate?.()?.toLocaleDateString('pt-BR') || ''}</span>
+              <span>👤 Operador: Pedro Furman</span>
+            </div>
+          </div>
+        )}
 
         {/* BOTÃO FLUTUANTE PARA ABRIR MAPA MINIMIZADO */}
         {tamanhoMapa === 'minimized' && (
           <button
             onClick={() => setTamanhoMapa('md')}
-            className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 bg-sinal-500 hover:bg-sinal-400 text-concreto-950 font-mono font-bold text-xs px-5 py-3 rounded-full shadow-2xl transition-all active:scale-[0.97] flex items-center gap-2 border border-sinal-400"
+            className="absolute bottom-6 left-[calc(50%-160px)] z-10 bg-sinal-500 hover:bg-sinal-400 text-concreto-950 font-mono font-bold text-xs px-5 py-3 rounded-full shadow-2xl transition-all active:scale-[0.97] flex items-center gap-2 border border-sinal-400"
           >
             🗺️ Abrir Planta Baixa
           </button>
@@ -279,7 +440,7 @@ export default function Visita() {
 
         {/* MAPA PLANTA BAIXA FLUTUANTE (Z-INDEX 10) */}
         {tamanhoMapa !== 'minimized' && (
-          <div className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-10 bg-concreto-950/90 backdrop-blur-md border border-concreto-700/80 rounded-xl p-3.5 shadow-2xl flex flex-col gap-2.5 transition-all duration-300 ${mapaDimensões[tamanhoMapa]}`}>
+          <div className={`absolute bottom-[76px] left-1/2 -translate-x-1/2 z-10 bg-concreto-950/90 backdrop-blur-md border border-concreto-700/80 rounded-xl p-3.5 shadow-2xl flex flex-col gap-2.5 transition-all duration-300 ${mapaDimensões[tamanhoMapa]}`}>
             
             {/* Control Bar do Mapa */}
             <div className="flex items-center justify-between border-b border-concreto-800/80 pb-2 shrink-0">
