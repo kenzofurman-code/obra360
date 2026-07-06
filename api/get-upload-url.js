@@ -35,9 +35,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Inicia uma sessão de upload TUS no Cloudflare
+    // CRITICAL: Adicionamos ?direct_user=true no final do endpoint para sinalizar que o upload
+    // será feito diretamente pelo navegador (cliente) e obter a URL com CORS liberado.
     const response = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${accountId}/stream`,
+      `https://api.cloudflare.com/client/v4/accounts/${accountId}/stream?direct_user=true`,
       {
         method: 'POST',
         headers: {
@@ -48,7 +49,6 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           maxDurationSeconds: 3600, // Limite de 1 hora
-          allowedOrigins: ['*'],    // Permite uploads de qualquer origem no Cloudflare
         })
       }
     );
@@ -66,8 +66,7 @@ export default async function handler(req, res) {
       return;
     }
 
-    // CRITICAL CORS FIX: Substitui os domínios internos e de gerenciamento do Cloudflare
-    // pelo domínio público e compatível com CORS 'upload.videodelivery.net'
+    // Substituição preventiva: garante que a URL use o domínio de upload CORS-friendly do Cloudflare
     uploadURL = uploadURL
       .replace('edge-production.gateway.api.cloudflare.com', 'upload.videodelivery.net')
       .replace('api.cloudflare.com', 'upload.videodelivery.net');
