@@ -62,6 +62,12 @@ export default function Upload() {
       // Requisita URL assinada do Cloudflare a partir do nosso backend serverless
       const response = await fetch('/api/get-upload-url', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          fileSize: videoFile.size,
+        }),
       })
       
       if (!response.ok) {
@@ -73,7 +79,7 @@ export default function Upload() {
       setUploadStatus('Iniciando envio para o Cloudflare Stream...')
 
       const upload = new tus.Upload(videoFile, {
-        endpoint: uploadURL,
+        uploadUrl: uploadURL,
         chunkSize: 50 * 1024 * 1024, // 50MB (múltiplo de 256KB exigido pelo Cloudflare)
         retryDelays: [0, 3000, 5000, 10000, 20000],
         onError: function (error) {
