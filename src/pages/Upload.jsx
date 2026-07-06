@@ -74,7 +74,7 @@ export default function Upload() {
 
       // Cria a instância de Upload do Tus
       const upload = new tus.Upload(videoFile, {
-        endpoint: uploadURL,
+        uploadUrl: uploadURL,
         retryDelays: [0, 3000, 5000, 10000, 20000],
         metadata: {
           filename: videoFile.name,
