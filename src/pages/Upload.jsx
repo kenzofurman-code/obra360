@@ -72,9 +72,9 @@ export default function Upload() {
       const { uploadURL, uid, accountId } = await response.json()
       setUploadStatus('Iniciando envio para o Cloudflare Stream...')
 
-      // Cria a instância de Upload do Tus
       const upload = new tus.Upload(videoFile, {
         uploadUrl: uploadURL,
+        storeFingerprintForResuming: false,
         retryDelays: [0, 3000, 5000, 10000, 20000],
         metadata: {
           filename: videoFile.name,
