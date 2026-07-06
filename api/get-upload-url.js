@@ -36,7 +36,6 @@ export default async function handler(req, res) {
 
   try {
     // Inicia uma sessão de upload TUS no Cloudflare
-    // Passamos a origem permitida no body para evitar erros de CORS no navegador
     const response = await fetch(
       `https://api.cloudflare.com/client/v4/accounts/${accountId}/stream`,
       {
@@ -49,7 +48,7 @@ export default async function handler(req, res) {
         },
         body: JSON.stringify({
           maxDurationSeconds: 3600, // Limite de 1 hora
-          allowedOrigins: ['*'],    // Permite uploads de qualquer origem para evitar bloqueio CORS
+          allowedOrigins: ['*'],    // Permite uploads de qualquer origem no Cloudflare
         })
       }
     );
@@ -61,11 +60,17 @@ export default async function handler(req, res) {
     }
 
     // O Cloudflare retorna a URL do recurso TUS criado no cabeçalho 'Location'
-    const uploadURL = response.headers.get('Location');
+    let uploadURL = response.headers.get('Location');
     if (!uploadURL) {
       res.status(500).json({ error: 'Cabeçalho Location não retornado pelo Cloudflare.' });
       return;
     }
+
+    // CRITICAL CORS FIX: Substitui os domínios internos e de gerenciamento do Cloudflare
+    // pelo domínio público e compatível com CORS 'upload.videodelivery.net'
+    uploadURL = uploadURL
+      .replace('edge-production.gateway.api.cloudflare.com', 'upload.videodelivery.net')
+      .replace('api.cloudflare.com', 'upload.videodelivery.net');
 
     // O UID do vídeo é o último segmento do caminho da URL do recurso TUS
     const uid = uploadURL.split('/').pop().split('?')[0];
