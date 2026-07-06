@@ -29,6 +29,9 @@ export default function Player360({
     if (!videoRef.current || !hlsUrl) return
     if (playerRef.current) return
 
+    const isHls = hlsUrl.includes('.m3u8')
+    const type = isHls ? 'application/x-mpegURL' : 'video/mp4'
+
     const player = videojs(videoRef.current, {
       controls: true,
       autoplay,
@@ -40,7 +43,7 @@ export default function Player360({
           enableLowInitialPlaylist: true,
         },
       },
-      sources: [{ src: hlsUrl, type: 'application/x-mpegURL' }],
+      sources: [{ src: hlsUrl, type }],
     })
 
     // Ativa o plugin VR (equiretangular 360°)
