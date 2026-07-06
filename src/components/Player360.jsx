@@ -27,10 +27,13 @@ export default function Player360({
   // Inicialização do Player
   useEffect(() => {
     if (!videoRef.current || !hlsUrl) return
-    if (playerRef.current) return
-
     const isHls = hlsUrl.includes('.m3u8')
     const type = isHls ? 'application/x-mpegURL' : 'video/mp4'
+
+    if (playerRef.current) {
+      playerRef.current.src({ src: hlsUrl, type })
+      return
+    }
 
     const player = videojs(videoRef.current, {
       controls: true,
@@ -194,6 +197,8 @@ export default function Player360({
     )
   }
 
+  const crossOrigin = hlsUrl?.startsWith('blob:') ? undefined : 'anonymous'
+
   return (
     <div className="w-full h-full rounded-lg overflow-hidden bg-black">
       <div data-vjs-player>
@@ -201,7 +206,7 @@ export default function Player360({
           ref={videoRef}
           className="video-js vjs-default-skin vjs-big-play-centered w-full h-full"
           playsInline
-          crossOrigin="anonymous"
+          crossOrigin={crossOrigin}
         />
       </div>
     </div>
