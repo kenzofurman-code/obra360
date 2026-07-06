@@ -33,6 +33,8 @@ export default function Visita() {
   const [modoCalibrarAncoras, setModoCalibrarAncoras] = useState(null) // null | 'ancora1' | 'ancora2'
   const [ancora1, setAncora1] = useState(null)
   const [ancora2, setAncora2] = useState(null)
+  const [isImported, setIsImported] = useState(false)
+  const [pathScale, setPathScale] = useState(0.15)
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
   const [listaVisitas, setListaVisitas] = useState([])
@@ -46,6 +48,85 @@ export default function Visita() {
     tempoAtual, duracao, posicao, waypointAtivo, player,
     registrarPlayer, pularParaWaypoint, pularParaCoordenada,
   } = useVideoSync(waypoints)
+
+  // Função para alinhar as coordenadas relativas da trajetória na planta baixa
+  const alinharPonto = useCallback((pt) => {
+    if (!pt) return null
+    if (!isImported) return pt
+
+    // 1. Alinhamento por 2 âncoras (Procrustes 2D)
+    if (ancora1 && ancora2 && waypoints.length > 1) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      const W1 = sorted[0]
+      const W2 = sorted[sorted.length - 1]
+
+      const dWx = W2.x - W1.x
+      const dWy = W2.y - W1.y
+      const distW = Math.sqrt(dWx * dWx + dWy * dWy)
+
+      const dAx = ancora2.x - ancora1.x
+      const dAy = ancora2.y - ancora1.y
+      const distA = Math.sqrt(dAx * dAx + dAy * dAy)
+
+      if (distW > 0 && distA > 0) {
+        const scale = distA / distW
+        const angleW = Math.atan2(dWy, dWx)
+        const angleA = Math.atan2(dAy, dAx)
+        const rotation = angleA - angleW
+
+        const dx = pt.x - W1.x
+        const dy = pt.y - W1.y
+
+        const rx = (dx * Math.cos(rotation) - dy * Math.sin(rotation)) * scale
+        const ry = (dx * Math.sin(rotation) + dy * Math.cos(rotation)) * scale
+
+        return {
+          x: ancora1.x + rx,
+          y: ancora1.y + ry
+        }
+      }
+    }
+
+    // 2. Alinhamento por 1 âncora + Escala + Giro da Bússola
+    if (ancora1 && waypoints.length > 0) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      const W1 = sorted[0]
+      const theta = (headingOffset * Math.PI) / 180
+
+      const dx = pt.x - W1.x
+      const dy = pt.y - W1.y
+
+      const rx = (dx * Math.cos(theta) - dy * Math.sin(theta)) * pathScale
+      const ry = (dx * Math.sin(theta) + dy * Math.cos(theta)) * pathScale
+
+      return {
+        x: ancora1.x + rx,
+        y: ancora1.y + ry
+      }
+    }
+
+    // 3. Sem nenhuma âncora: Centraliza a trajetória no meio do mapa (escala inicial provisória)
+    if (waypoints.length > 0) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      const W1 = sorted[0]
+      const dx = pt.x - W1.x
+      const dy = pt.y - W1.y
+      return {
+        x: 0.5 + dx * pathScale,
+        y: 0.5 + dy * pathScale
+      }
+    }
+
+    return pt
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale])
+
+  const waypointsAlinhados = useMemo(() => {
+    return waypoints.map(alinharPonto)
+  }, [waypoints, alinharPonto])
+
+  const posicaoAlinhada = useMemo(() => {
+    return alinharPonto(posicao)
+  }, [posicao, alinharPonto])
 
   // Sincroniza estado de play/pause do player com o React
   useEffect(() => {
@@ -92,6 +173,8 @@ export default function Visita() {
       setHeadingOffset(v.heading_offset || 0)
       setAncora1(v.ancora1 || null)
       setAncora2(v.ancora2 || null)
+      setIsImported(v.is_imported || false)
+      setPathScale(v.path_scale ?? 0.15)
     })
   }, [id, navigate])
 
@@ -220,6 +303,7 @@ export default function Visita() {
         heading_offset: headingOffset,
         ancora1,
         ancora2,
+        path_scale: pathScale,
       })
       mostrarToast('Alterações salvas com sucesso!')
     } catch (e) {
@@ -512,8 +596,8 @@ export default function Visita() {
             <div className="flex-1 min-h-0 relative rounded-lg overflow-hidden border border-concreto-800">
               <PlantaViewer
                 plantaUrl={visita.planta_url}
-                waypoints={waypoints}
-                posicao={posicao}
+                waypoints={waypointsAlinhados}
+                posicao={posicaoAlinhada}
                 waypointAtivo={waypointAtivo}
                 onClickCoordenada={handleClickCoordenada}
                 onClickWaypoint={pularParaWaypoint}
@@ -619,10 +703,32 @@ export default function Visita() {
               </p>
             </div>
 
+            {/* Slider de Tamanho da Trajetória (apenas se for trajetória importada) */}
+            {isImported && (
+              <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                <div className="flex justify-between items-center text-xs font-mono">
+                  <span className="text-aco-300 font-medium text-[11px]">Tamanho do Caminho (Escala)</span>
+                  <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{Math.round(pathScale * 100)}%</span>
+                </div>
+                <input
+                  type="range"
+                  min="3"
+                  max="50"
+                  step="1"
+                  value={Math.round(pathScale * 100)}
+                  onChange={e => setPathScale(parseFloat(e.target.value) / 100)}
+                  className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                />
+                <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                  Aumenta ou diminui a escala do trajeto para caber na planta baixa.
+                </p>
+              </div>
+            )}
+
             {/* Editor de Waypoints */}
             <div className="flex-1 min-h-0 flex flex-col">
               <WaypointEditor
-                waypoints={waypoints}
+                waypoints={waypointsAlinhados}
                 tempoAtual={tempoAtual}
                 duracao={duracao}
                 modoAdicionar={modoAdicionar}

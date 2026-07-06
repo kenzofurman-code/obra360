@@ -161,6 +161,7 @@ export default function Upload() {
               planta_url: finalPlantaUrl,
               duracao_segundos: parseInt(form.duracao_segundos) || 0,
               waypoints: waypoints,
+              is_imported: waypoints.length > 0,
             })
             navigate(`/visita/${id}`)
           } catch (e) {
@@ -211,6 +212,7 @@ export default function Upload() {
         planta_url: finalPlantaUrl,
         duracao_segundos: parseInt(form.duracao_segundos) || 0,
         waypoints: waypoints,
+        is_imported: waypoints.length > 0,
       })
       navigate(`/visita/${id}`)
     } catch (e) {
