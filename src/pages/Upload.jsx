@@ -2,6 +2,8 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { criarVisita } from '../lib/visitas'
+import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
+import { storage } from '../lib/firebase'
 import * as tus from 'tus-js-client'
 
 const PAVIMENTOS = [
@@ -21,11 +23,14 @@ export default function Upload() {
     duracao_segundos: '',
   })
   
-  // Estados para Upload Direto
+  // Estados para Upload do Vídeo
   const [videoFile, setVideoFile] = useState(null)
   const [uploadProgress, setUploadProgress] = useState(0)
   const [uploading, setUploading] = useState(false)
   const [uploadStatus, setUploadStatus] = useState('')
+  
+  // Estado para Upload da Planta Baixa
+  const [plantaFile, setPlantaFile] = useState(null)
   
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState('')
@@ -33,7 +38,17 @@ export default function Upload() {
 
   function set(k, v) { setForm(prev => ({ ...prev, [k]: v })) }
 
-  // 1. Upload Direto para Cloudflare Stream via Tus
+  // Função auxiliar para subir a imagem da planta para o Firebase Storage
+  async function uploadPlanta(file) {
+    if (!file) return null
+    // Cria referência única na pasta "plantas"
+    const fileRef = ref(storage, `plantas/${Date.now()}_${file.name}`)
+    await uploadBytes(fileRef, file)
+    const downloadURL = await getDownloadURL(fileRef)
+    return downloadURL
+  }
+
+  // 1. Upload Direto para Cloudflare Stream via Tus + Planta Baixa
   async function iniciarUploadDireto() {
     if (!videoFile) {
       setErro('Selecione um arquivo de vídeo .mp4 para fazer o upload.')
@@ -76,7 +91,21 @@ export default function Upload() {
           setUploadStatus(`Enviando vídeo: ${percentage}%`)
         },
         onSuccess: async function () {
-          setUploadStatus('Vídeo enviado com sucesso! Salvando vistoria...')
+          setUploadStatus('Vídeo enviado! Enviando imagem da planta baixa...')
+          
+          let finalPlantaUrl = form.planta_url.trim() || null
+          try {
+            if (plantaFile) {
+              finalPlantaUrl = await uploadPlanta(plantaFile)
+            }
+          } catch (uploadError) {
+            console.error('Erro ao subir planta:', uploadError)
+            setErro('Vídeo enviado, mas erro ao salvar imagem da planta baixa: ' + uploadError.message)
+            setUploading(false)
+            return
+          }
+
+          setUploadStatus('Salvando vistoria no Firebase...')
           
           // Formatos de URLs geradas automaticamente pelo Cloudflare Stream
           const hlsUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/manifest/video.m3u8`
@@ -87,7 +116,7 @@ export default function Upload() {
               pavimento: form.pavimento,
               hls_url: hlsUrl,
               thumbnail_url: thumbnailUrl,
-              planta_url: form.planta_url.trim() || null,
+              planta_url: finalPlantaUrl,
               duracao_segundos: parseInt(form.duracao_segundos) || 0,
             })
             navigate(`/visita/${id}`)
@@ -107,7 +136,7 @@ export default function Upload() {
     }
   }
 
-  // 2. Criação com link manual (ex: Cloudflare R2 direto)
+  // 2. Criação com link manual (e upload opcional de planta)
   async function salvarManual() {
     if (!form.hls_url.trim()) {
       setErro('Informe a URL do arquivo index.m3u8.')
@@ -119,12 +148,24 @@ export default function Upload() {
     }
     setSalvando(true)
     setErro('')
+
+    let finalPlantaUrl = form.planta_url.trim() || null
+    try {
+      if (plantaFile) {
+        finalPlantaUrl = await uploadPlanta(plantaFile)
+      }
+    } catch (uploadError) {
+      setErro('Erro ao subir imagem da planta baixa: ' + uploadError.message)
+      setSalvando(false)
+      return
+    }
+
     try {
       const id = await criarVisita({
         pavimento: form.pavimento,
         hls_url: form.hls_url.trim(),
         thumbnail_url: form.thumbnail_url.trim() || null,
-        planta_url: form.planta_url.trim() || null,
+        planta_url: finalPlantaUrl,
         duracao_segundos: parseInt(form.duracao_segundos) || 0,
       })
       navigate(`/visita/${id}`)
@@ -255,14 +296,43 @@ export default function Upload() {
             </>
           )}
 
-          <Field label="URL da planta PNG" hint="Upload da imagem da planta baixa (opcional)">
-            <input
-              value={form.planta_url}
-              onChange={e => set('planta_url', e.target.value)}
-              disabled={uploading || salvando}
-              placeholder="https://pub-xxx.r2.dev/plantas/terreo.png"
-              className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
-            />
+          {/* Planta Baixa: Upload ou link manual */}
+          <Field label="Planta Baixa (Imagem PNG/JPG)" hint="Selecione a planta baixa para mapear os waypoints">
+            {plantaFile ? (
+              <div className="flex items-center justify-between bg-concreto-800 border border-concreto-700 p-2.5 rounded-lg text-xs">
+                <span className="font-mono text-aco-200 truncate">{plantaFile.name}</span>
+                <button
+                  type="button"
+                  onClick={() => setPlantaFile(null)}
+                  className="text-alerta text-xs hover:underline font-mono bg-transparent border-0 cursor-pointer"
+                >
+                  Remover
+                </button>
+              </div>
+            ) : (
+              <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded-lg p-3 bg-concreto-800/10 text-center cursor-pointer transition-all">
+                <input
+                  type="file"
+                  accept="image/png, image/jpeg, image/jpg"
+                  onChange={e => {
+                    const file = e.target.files[0]
+                    if (file) setPlantaFile(file)
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <span className="text-xs text-aco-300">Escolher imagem local da planta baixa</span>
+              </div>
+            )}
+            
+            {!plantaFile && (
+              <input
+                value={form.planta_url}
+                onChange={e => set('planta_url', e.target.value)}
+                disabled={uploading || salvando}
+                placeholder="Ou cole uma URL ex: https://pub-xxx.r2.dev/planta.png"
+                className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2 text-xs text-aco-200 mt-2 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
+              />
+            )}
           </Field>
 
           <Field label="Duração do vídeo (segundos)" hint="Opcional">
@@ -283,7 +353,7 @@ export default function Upload() {
             disabled={uploading || salvando}
             className="w-full bg-sinal-500 hover:bg-sinal-400 active:scale-[0.99] disabled:opacity-50 text-concreto-950 font-semibold text-xs py-3 rounded-lg transition-all shadow-md shadow-sinal-500/10"
           >
-            {uploading ? 'Enviando Vídeo...' : salvando ? 'Salvando Vistoria...' : 'Criar Vistoria e Iniciar Mapeamento'}
+            {uploading ? 'Enviando Vistoria...' : salvando ? 'Salvando Vistoria...' : 'Criar Vistoria e Iniciar Mapeamento'}
           </button>
         </div>
 
@@ -342,12 +412,12 @@ export default function Upload() {
                     activeStep === 3 ? 'bg-concreto-800 text-sinal-400' : 'bg-concreto-900 text-aco-300 hover:bg-concreto-800/40'
                   }`}
                 >
-                  <span>3. Transcodificação Automática</span>
+                  <span>3. Armazenamento da Planta</span>
                   <span>{activeStep === 3 ? '▼' : '►'}</span>
                 </button>
                 {activeStep === 3 && (
                   <div className="p-3 bg-concreto-950/40 text-aco-400 space-y-2 border-t border-concreto-800 leading-relaxed">
-                    <p>O Cloudflare Stream se encarrega de converter o MP4 para HLS adaptativo e gerar imagens de preview em tempo real. O player de vídeo da Vistoria funcionará imediatamente.</p>
+                    <p>Ao selecionar uma imagem local para a Planta Baixa, ela é enviada com segurança e de forma automática para o seu **Firebase Storage**, permitindo a marcação dos caminhos sem depender de links externos.</p>
                   </div>
                 )}
               </div>
