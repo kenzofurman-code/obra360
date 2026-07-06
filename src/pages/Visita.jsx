@@ -17,6 +17,10 @@ export default function Visita() {
   const [salvando, setSalvando] = useState(false)
   const [toast, setToast] = useState(null)
 
+  // Layout Interativo
+  const [tamanhoMapa, setTamanhoMapa] = useState('md') // 'sm' | 'md' | 'lg' | 'minimized'
+  const [menuAberto, setMenuAberto] = useState(false) // se a gaveta lateral de edição está aberta
+
   // Estados adicionais para calibração, sobreposição e azimute
   const [headingOffset, setHeadingOffset] = useState(0)
   const [modoCalibrarAncoras, setModoCalibrarAncoras] = useState(null) // null | 'ancora1' | 'ancora2'
@@ -201,11 +205,18 @@ export default function Visita() {
     )
   }
 
+  // Define as dimensões do mapa flutuante baseado no tamanho selecionado
+  const mapaDimensões = {
+    sm: 'w-[360px] h-[240px]',
+    md: 'w-[520px] h-[340px]',
+    lg: 'w-[700px] h-[450px]',
+  }
+
   return (
-    <div className="min-h-screen bg-concreto-950 flex flex-col text-aco-200">
+    <div className="h-screen w-screen bg-black flex flex-col text-aco-200 overflow-hidden relative">
       
       {/* Topbar */}
-      <header className="h-14 bg-concreto-900 border-b border-concreto-700/80 flex items-center justify-between px-6 shrink-0 shadow-lg">
+      <header className="h-14 bg-concreto-900/85 backdrop-blur border-b border-concreto-700/60 flex items-center justify-between px-6 shrink-0 shadow-lg z-20">
         <div className="flex items-center gap-4">
           <button
             onClick={() => navigate('/')}
@@ -244,113 +255,178 @@ export default function Visita() {
         </div>
       </header>
 
-      {/* Layout principal */}
-      <main className="flex-1 grid grid-cols-[1.1fr_1fr_310px] gap-3.5 p-3.5 min-h-0">
+      {/* Main View Area */}
+      <main className="flex-1 w-full relative min-h-0 overflow-hidden z-10">
         
-        {/* Coluna 1: Player 360° */}
-        <div className="flex flex-col gap-2.5 min-h-0">
-          <div className="flex items-center justify-between">
-            <p className="font-mono text-xs text-aco-400 uppercase tracking-widest">Vídeo 360° interativo</p>
-            <span className="text-[10px] text-aco-400 font-mono">Arraste para rotacionar a câmera</span>
-          </div>
-          <div className="flex-1 bg-concreto-900 rounded-lg overflow-hidden border border-concreto-700/80 shadow-md">
-            <Player360
-              hlsUrl={visita.hls_url}
-              onReady={registrarPlayer}
-              autoplay={false}
-            />
-          </div>
+        {/* PLAYER 360° EM TELA CHEIA (Z-INDEX 0) */}
+        <div className="absolute inset-0 w-full h-full z-0">
+          <Player360
+            hlsUrl={visita.hls_url}
+            onReady={registrarPlayer}
+            autoplay={false}
+          />
         </div>
 
-        {/* Coluna 2: Planta e Bússola */}
-        <div className="flex flex-col gap-2.5 min-h-0">
-          <div className="flex items-center justify-between">
-            <p className="font-mono text-xs text-aco-400 uppercase tracking-widest">
-              Planta baixa — {
-                modoCalibrarAncoras
-                  ? <span className="text-blue-400 animate-pulse">clique para marcar {modoCalibrarAncoras === 'ancora1' ? 'Âncora A' : 'Âncora B'}</span>
-                  : modoTrajetoriaRapida
-                    ? <span className="text-sinal-400 animate-pulse">modo trajetória rápida</span>
-                    : modoAdicionar
-                      ? <span className="text-sinal-400">modo marcação</span>
-                      : 'clique para navegar no tempo'
-              }
-            </p>
-          </div>
-          
-          <div className="flex-1 min-h-0 relative">
-            <PlantaViewer
-              plantaUrl={visita.planta_url}
-              waypoints={waypoints}
-              posicao={posicao}
-              waypointAtivo={waypointAtivo}
-              onClickCoordenada={handleClickCoordenada}
-              onClickWaypoint={pularParaWaypoint}
-              player={player}
-              headingOffset={headingOffset}
-              modoCalibrarAncoras={modoCalibrarAncoras}
-              ancora1={ancora1}
-              ancora2={ancora2}
-              visitaSobreposta={visitaSobreposta}
-            />
-          </div>
+        {/* BOTÃO FLUTUANTE PARA ABRIR MAPA MINIMIZADO */}
+        {tamanhoMapa === 'minimized' && (
+          <button
+            onClick={() => setTamanhoMapa('md')}
+            className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 bg-sinal-500 hover:bg-sinal-400 text-concreto-950 font-mono font-bold text-xs px-5 py-3 rounded-full shadow-2xl transition-all active:scale-[0.97] flex items-center gap-2 border border-sinal-400"
+          >
+            🗺️ Abrir Planta Baixa
+          </button>
+        )}
 
-          {/* Slider de Calibração da Bússola */}
-          <div className="bg-concreto-900 border border-concreto-700/70 rounded-lg p-3 flex flex-col gap-2 shadow-md shrink-0">
-            <div className="flex justify-between items-center text-xs font-mono">
-              <span className="text-aco-300 font-medium">Bússola (Alinhamento do Norte)</span>
-              <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded border border-sinal-500/20">{headingOffset}°</span>
+        {/* MAPA PLANTA BAIXA FLUTUANTE (Z-INDEX 10) */}
+        {tamanhoMapa !== 'minimized' && (
+          <div className={`absolute bottom-6 left-1/2 -translate-x-1/2 z-10 bg-concreto-950/90 backdrop-blur-md border border-concreto-700/80 rounded-xl p-3.5 shadow-2xl flex flex-col gap-2.5 transition-all duration-300 ${mapaDimensões[tamanhoMapa]}`}>
+            
+            {/* Control Bar do Mapa */}
+            <div className="flex items-center justify-between border-b border-concreto-800/80 pb-2 shrink-0">
+              <span className="font-mono text-[9px] text-aco-300 font-semibold uppercase tracking-widest flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-sinal-500 animate-ping inline-block" />
+                Mapa de Navegação
+              </span>
+              
+              <div className="flex items-center gap-1.5">
+                <button
+                  onClick={() => setTamanhoMapa('sm')}
+                  className={`w-5 h-5 rounded text-[10px] font-mono flex items-center justify-center border transition-all ${
+                    tamanhoMapa === 'sm' ? 'bg-sinal-500 text-concreto-950 border-sinal-500 font-bold' : 'border-concreto-750 text-aco-400 hover:text-aco-200'
+                  }`}
+                  title="Pequeno"
+                >
+                  P
+                </button>
+                <button
+                  onClick={() => setTamanhoMapa('md')}
+                  className={`w-5 h-5 rounded text-[10px] font-mono flex items-center justify-center border transition-all ${
+                    tamanhoMapa === 'md' ? 'bg-sinal-500 text-concreto-950 border-sinal-500 font-bold' : 'border-concreto-750 text-aco-400 hover:text-aco-200'
+                  }`}
+                  title="Médio"
+                >
+                  M
+                </button>
+                <button
+                  onClick={() => setTamanhoMapa('lg')}
+                  className={`w-5 h-5 rounded text-[10px] font-mono flex items-center justify-center border transition-all ${
+                    tamanhoMapa === 'lg' ? 'bg-sinal-500 text-concreto-950 border-sinal-500 font-bold' : 'border-concreto-750 text-aco-400 hover:text-aco-200'
+                  }`}
+                  title="Grande"
+                >
+                  G
+                </button>
+                <div className="w-px h-3 bg-concreto-800" />
+                <button
+                  onClick={() => setTamanhoMapa('minimized')}
+                  className="w-5 h-5 rounded text-[10px] flex items-center justify-center border border-concreto-750 text-aco-400 hover:text-alerta transition-all"
+                  title="Minimizar"
+                >
+                  ✕
+                </button>
+              </div>
             </div>
-            <input
-              type="range"
-              min="-180"
-              max="180"
-              value={headingOffset}
-              onChange={e => setHeadingOffset(parseInt(e.target.value))}
-              className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
-            />
-            <p className="text-[10px] text-aco-400 font-mono leading-relaxed">
-              Arraste o controle acima para girar o cone azul de visão no mapa, alinhando-o com a direção do vídeo.
-            </p>
+
+            {/* Planta Canvas */}
+            <div className="flex-1 min-h-0 relative rounded-lg overflow-hidden border border-concreto-800">
+              <PlantaViewer
+                plantaUrl={visita.planta_url}
+                waypoints={waypoints}
+                posicao={posicao}
+                waypointAtivo={waypointAtivo}
+                onClickCoordenada={handleClickCoordenada}
+                onClickWaypoint={pularParaWaypoint}
+                player={player}
+                headingOffset={headingOffset}
+                modoCalibrarAncoras={modoCalibrarAncoras}
+                ancora1={ancora1}
+                ancora2={ancora2}
+                visitaSobreposta={visitaSobreposta}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Coluna 3: Painel Lateral / Editor */}
-        <div className="flex flex-col gap-2.5 min-h-0">
-          <p className="font-mono text-xs text-aco-400 uppercase tracking-widest">Painel de controle</p>
-          <div className="flex-1 min-h-0">
-            <WaypointEditor
-              waypoints={waypoints}
-              tempoAtual={tempoAtual}
-              duracao={duracao}
-              modoAdicionar={modoAdicionar}
-              onToggleModo={() => { setModoAdicionar(v => !v); setPendente(null) }}
-              onRemover={removerWaypoint}
-              onSalvar={salvar}
-              onClickWaypoint={pularParaWaypoint}
-              pendente={pendente}
-              onConfirmarPendente={confirmarPendente}
-              onCancelarPendente={() => { setPendente(null); setModoAdicionar(false) }}
+        {/* BOTÃO FLUTUANTE PARA CONFIGURAÇÕES / DRAWER */}
+        {!menuAberto && (
+          <button
+            onClick={() => setMenuAberto(true)}
+            className="absolute top-4 right-4 z-10 bg-concreto-900/90 backdrop-blur border border-concreto-700/80 hover:border-sinal-500/50 text-aco-200 hover:text-sinal-400 px-4 py-2.5 rounded-lg font-mono text-xs shadow-xl transition-all active:scale-[0.97]"
+          >
+            ⚙️ Painel de Controle
+          </button>
+        )}
 
-              // Âncoras
-              modoCalibrarAncoras={modoCalibrarAncoras}
-              onToggleCalibrarAncoras={handleToggleCalibrarAncoras}
-              ancora1={ancora1}
-              ancora2={ancora2}
-              onLimparAncoras={handleLimparAncoras}
+        {/* GAVETA RETRÁTIL DE CONFIGURAÇÃO & EDITOR (DRAWER Z-INDEX 15) */}
+        {menuAberto && (
+          <div className="absolute top-0 right-0 h-full w-[310px] bg-concreto-950/95 backdrop-blur-md border-l border-concreto-700/80 shadow-2xl flex flex-col p-4 gap-4 z-15 transition-transform duration-300 translate-x-0">
+            
+            {/* Header do Drawer */}
+            <div className="flex items-center justify-between border-b border-concreto-800/80 pb-2.5">
+              <span className="font-sans font-bold text-xs uppercase tracking-wider text-aco-100">Configurações</span>
+              <button
+                onClick={() => setMenuAberto(false)}
+                className="text-aco-400 hover:text-alerta text-xs px-2.5 py-1 font-mono hover:underline"
+              >
+                Fechar ✕
+              </button>
+            </div>
 
-              // Sobreposição
-              listaVisitas={listaVisitas}
-              visitaSobrepostaId={visitaSobrepostaId}
-              onSelectVisitaSobreposta={setVisitaSobrepostaId}
+            {/* Slider de Calibração da Bússola */}
+            <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+              <div className="flex justify-between items-center text-xs font-mono">
+                <span className="text-aco-300 font-medium text-[11px]">Bússola (Alinhamento Norte)</span>
+                <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{headingOffset}°</span>
+              </div>
+              <input
+                type="range"
+                min="-180"
+                max="180"
+                value={headingOffset}
+                onChange={e => setHeadingOffset(parseInt(e.target.value))}
+                className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+              />
+              <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                Alinha o cone azul de visão no mapa à perspectiva real da câmera.
+              </p>
+            </div>
 
-              // Trajetória rápida
-              modoTrajetoriaRapida={modoTrajetoriaRapida}
-              onToggleModoTrajetoriaRapida={handleToggleModoTrajetoriaRapida}
-              etapaTrajetoriaRapida={etapaTrajetoriaRapida}
-            />
+            {/* Editor de Waypoints */}
+            <div className="flex-1 min-h-0 flex flex-col">
+              <WaypointEditor
+                waypoints={waypoints}
+                tempoAtual={tempoAtual}
+                duracao={duracao}
+                modoAdicionar={modoAdicionar}
+                onToggleModo={() => { setModoAdicionar(v => !v); setPendente(null) }}
+                onRemover={removerWaypoint}
+                onSalvar={salvar}
+                onClickWaypoint={pularParaWaypoint}
+                pendente={pendente}
+                onConfirmarPendente={confirmarPendente}
+                onCancelarPendente={() => { setPendente(null); setModoAdicionar(false) }}
+
+                // Âncoras
+                modoCalibrarAncoras={modoCalibrarAncoras}
+                onToggleCalibrarAncoras={handleToggleCalibrarAncoras}
+                ancora1={ancora1}
+                ancora2={ancora2}
+                onLimparAncoras={handleLimparAncoras}
+
+                // Sobreposição
+                listaVisitas={listaVisitas}
+                visitaSobrepostaId={visitaSobrepostaId}
+                onSelectVisitaSobreposta={setVisitaSobrepostaId}
+
+                // Trajetória rápida
+                modoTrajetoriaRapida={modoTrajetoriaRapida}
+                onToggleModoTrajetoriaRapida={handleToggleModoTrajetoriaRapida}
+                etapaTrajetoriaRapida={etapaTrajetoriaRapida}
+              />
+            </div>
+
           </div>
-        </div>
+        )}
 
       </main>
     </div>
