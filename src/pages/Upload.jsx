@@ -73,13 +73,9 @@ export default function Upload() {
       setUploadStatus('Iniciando envio para o Cloudflare Stream...')
 
       const upload = new tus.Upload(videoFile, {
-        uploadUrl: uploadURL,
-        storeFingerprintForResuming: false,
+        endpoint: uploadURL,
+        chunkSize: 50 * 1024 * 1024, // 50MB (múltiplo de 256KB exigido pelo Cloudflare)
         retryDelays: [0, 3000, 5000, 10000, 20000],
-        metadata: {
-          filename: videoFile.name,
-          filetype: videoFile.type,
-        },
         onError: function (error) {
           console.error('Erro no upload Tus:', error)
           setErro('Falha no envio do vídeo: ' + error.message)
