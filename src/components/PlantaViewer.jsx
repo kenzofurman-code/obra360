@@ -283,6 +283,7 @@ export default function PlantaViewer({
       return
     }
 
+    // 1. Primeiro verifica se clicou muito próximo de um pin (waypoint fixo com nota)
     const THRESH = 0.035
     const clicked = waypoints.find(
       wp => Math.sqrt((wp.x - x) ** 2 + (wp.y - y) ** 2) < THRESH
@@ -290,10 +291,55 @@ export default function PlantaViewer({
 
     if (clicked && onClickWaypoint) {
       onClickWaypoint(clicked)
-    } else if (onClickCoordenada) {
+      return
+    }
+
+    // 2. Se não clicou num waypoint fixo, verifica se clicou em algum lugar ao longo do caminho (tipo Street View)
+    if (waypoints.length > 1 && player) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      let minDistance = Infinity
+      let bestTime = null
+
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const A = sorted[i]
+        const B = sorted[i + 1]
+
+        const abX = B.x - A.x
+        const abY = B.y - A.y
+        const abLen2 = abX * abX + abY * abY
+
+        if (abLen2 === 0) continue
+
+        // Projeta o clique P(x,y) no segmento de reta AB
+        const apX = x - A.x
+        const apY = y - A.y
+        const r = Math.max(0, Math.min(1, (apX * abX + apY * abY) / abLen2))
+
+        const cX = A.x + r * abX
+        const cY = A.y + r * abY
+
+        const dist = Math.sqrt((x - cX) ** 2 + (y - cY) ** 2)
+
+        if (dist < minDistance) {
+          minDistance = dist
+          // Interpolação linear do tempo do vídeo baseado na posição proporcional no segmento
+          bestTime = A.t + r * (B.t - A.t)
+        }
+      }
+
+      // Limiar de proximidade de clique ao traçado (0.025 = 2.5% do tamanho do canvas)
+      const PATH_THRESH = 0.025
+      if (minDistance < PATH_THRESH && bestTime !== null) {
+        player.currentTime(bestTime)
+        return
+      }
+    }
+
+    // 3. Caso contrário, trata como um clique em coordenada livre (para novos waypoints/âncoras)
+    if (onClickCoordenada) {
       onClickCoordenada(x, y)
     }
-  }, [waypoints, onClickCoordenada, onClickWaypoint, modoCalibrarAncoras])
+  }, [waypoints, onClickCoordenada, onClickWaypoint, modoCalibrarAncoras, player])
 
   return (
     <div className="relative w-full h-full rounded-lg overflow-hidden bg-concreto-900 border border-concreto-700">

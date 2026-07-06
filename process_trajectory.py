@@ -38,7 +38,7 @@ def extract_trajectory(video_path, sample_rate=0.5):
     x_offset = (width - w_crop) // 2
     y_offset = (height - h_crop) // 2
 
-    # Matriz intrinseca intrinseca estimada da camera (K) baseada no crop
+    # Matriz intrinseca estimada da camera (K) baseada no crop
     focal_length = w_crop / 2.0
     cx = w_crop / 2.0
     cy = h_crop / 2.0
@@ -124,11 +124,9 @@ def extract_trajectory(video_path, sample_rate=0.5):
                 _, R, t, mask = cv2.recoverPose(E, good_curr, good_prev, K)
 
                 # Mantem escala unitaria constante ja que a escala real do SLAM monocular e ambigua
-                # (A escala sera ajustada interativamente na planta pelo usuario)
                 scale = 0.08  # Constante de passo aproximada por frame
 
-                # Atualiza posicao e orientacao
-                # Apenas atualiza se houver inliers suficientes na matriz de pose
+                # Atualiza posicao e orientacao se houver inliers suficientes
                 if np.sum(mask) > 5:
                     pos = pos + scale * rot.dot(t)
                     rot = R.dot(rot)
@@ -150,6 +148,23 @@ def extract_trajectory(video_path, sample_rate=0.5):
 
     cap.release()
     print("Processamento concluido!")
+
+    # NORMALIZACAO DA ESCALA DO CAMINHO
+    # Encontra a maior distancia em relacao ao ponto inicial (0,0) para escalar de forma previsivel
+    max_dist = 0.0
+    for wp in waypoints:
+        dist = np.sqrt(wp["x"]**2 + wp["y"]**2)
+        if dist > max_dist:
+            max_dist = dist
+            
+    if max_dist > 0:
+        # Normaliza a trajetoria para que o ponto mais distante do inicio esteja a exatamente 2.0 unidades
+        # Isso mantem a passarela 3D estavel no Three.js e evita que ela tenda ao infinito no horizonte
+        scale_factor = 2.0 / max_dist
+        for wp in waypoints:
+            wp["x"] *= scale_factor
+            wp["y"] *= scale_factor
+
     return waypoints
 
 def main():
