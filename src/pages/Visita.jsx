@@ -67,8 +67,24 @@ export default function Visita() {
     })
   }, [id])
 
-  // Carrega dados da visita principal
+  // Carrega dados da visita principal ou inicializa em modo demonstração
   useEffect(() => {
+    if (id === 'demo') {
+      setVisita({
+        id: 'demo',
+        pavimento: 'Demonstração Local (Offline)',
+        hls_url: '', // começa sem vídeo
+        planta_url: '', // começa sem planta
+        heading_offset: 0,
+        status: 'ready'
+      })
+      setWaypoints([])
+      setHeadingOffset(0)
+      setAncora1(null)
+      setAncora2(null)
+      return
+    }
+
     getVisita(id).then(v => {
       if (!v) { navigate('/'); return }
       setVisita(v)
@@ -193,6 +209,10 @@ export default function Visita() {
   }
 
   async function salvar() {
+    if (id === 'demo') {
+      mostrarToast('O modo demo é apenas para testes locais temporários (não salvos no Firebase).', 'erro')
+      return
+    }
     setSalvando(true)
     try {
       await atualizarVisita(id, {
@@ -533,27 +553,50 @@ export default function Visita() {
               </button>
             </div>
 
-            {/* Teste com Vídeo Local (.mp4) */}
-            <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
-              <span className="text-[11px] font-semibold text-aco-300 font-mono block">Vídeo MP4 Local (Teste)</span>
-              <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded bg-concreto-800/20 p-2 text-center cursor-pointer transition-all">
-                <input
-                  type="file"
-                  accept="video/mp4"
-                  onChange={e => {
-                    const file = e.target.files[0]
-                    if (file) {
-                      const localUrl = URL.createObjectURL(file)
-                      setVisita(prev => ({ ...prev, hls_url: localUrl }))
-                      mostrarToast('Vídeo local carregado no player!')
-                    }
-                  }}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
-                />
-                <span className="text-[10px] text-aco-400 font-mono">Selecionar MP4 Local</span>
+            {/* Teste com Vídeo e Planta locais */}
+            <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-3 shrink-0">
+              <div>
+                <span className="text-[11px] font-semibold text-aco-300 font-mono block mb-1">Vídeo MP4 Local (Teste)</span>
+                <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded bg-concreto-800/20 p-2 text-center cursor-pointer transition-all">
+                  <input
+                    type="file"
+                    accept="video/mp4"
+                    onChange={e => {
+                      const file = e.target.files[0]
+                      if (file) {
+                        const localUrl = URL.createObjectURL(file)
+                        setVisita(prev => ({ ...prev, hls_url: localUrl }))
+                        mostrarToast('Vídeo local carregado no player!')
+                      }
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <span className="text-[10px] text-aco-400 font-mono">Selecionar MP4 Local</span>
+                </div>
               </div>
+
+              <div>
+                <span className="text-[11px] font-semibold text-aco-300 font-mono block mb-1">Planta Baixa Local (Teste)</span>
+                <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded bg-concreto-800/20 p-2 text-center cursor-pointer transition-all">
+                  <input
+                    type="file"
+                    accept="image/*"
+                    onChange={e => {
+                      const file = e.target.files[0]
+                      if (file) {
+                        const localUrl = URL.createObjectURL(file)
+                        setVisita(prev => ({ ...prev, planta_url: localUrl }))
+                        mostrarToast('Planta baixa local carregada!')
+                      }
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <span className="text-[10px] text-aco-400 font-mono">Selecionar Planta Local</span>
+                </div>
+              </div>
+              
               <p className="text-[9px] text-aco-400 leading-normal font-mono">
-                Permite testar a caminhada e a passarela 3D sem precisar fazer upload.
+                Permite testar a caminhada e a passarela 3D sem precisar de banco de dados ou fazer upload.
               </p>
             </div>
 

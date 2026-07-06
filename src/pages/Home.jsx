@@ -44,12 +44,20 @@ export default function Home() {
               Vistorias & Inspeções Obra360
             </h1>
           </div>
-          <button
-            onClick={() => navigate('/upload')}
-            className="bg-sinal-500 hover:bg-sinal-400 active:scale-[0.98] text-concreto-950 font-semibold text-xs px-4 py-2.5 rounded transition-all shadow-md shadow-sinal-500/10"
-          >
-            + Nova Vistoria
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => navigate('/visita/demo')}
+              className="bg-concreto-800 hover:bg-concreto-700 active:scale-[0.98] text-aco-200 border border-concreto-600/50 font-semibold text-xs px-4 py-2.5 rounded transition-all shadow-sm"
+            >
+              🧪 Modo Demo (Offline)
+            </button>
+            <button
+              onClick={() => navigate('/upload')}
+              className="bg-sinal-500 hover:bg-sinal-400 active:scale-[0.98] text-concreto-950 font-semibold text-xs px-4 py-2.5 rounded transition-all shadow-md shadow-sinal-500/10"
+            >
+              + Nova Vistoria
+            </button>
+          </div>
         </div>
       </header>
 
@@ -66,12 +74,20 @@ export default function Home() {
         {!loading && visitas.length === 0 && (
           <div className="text-center py-24 border border-dashed border-concreto-700/50 rounded-xl bg-concreto-900/10">
             <p className="text-aco-400 text-sm font-mono mb-4">Nenhuma vistoria ou pavimento cadastrado ainda.</p>
-            <button
-              onClick={() => navigate('/upload')}
-              className="bg-concreto-800 hover:bg-concreto-700/80 text-aco-300 text-xs px-6 py-2.5 rounded border border-concreto-600/50 transition-all font-mono"
-            >
-              Fazer Upload da Primeira Visita 360°
-            </button>
+            <div className="flex justify-center gap-3">
+              <button
+                onClick={() => navigate('/upload')}
+                className="bg-sinal-500 hover:bg-sinal-400 text-concreto-950 text-xs px-6 py-2.5 rounded font-semibold transition-all shadow"
+              >
+                Fazer Upload da Primeira Visita 360°
+              </button>
+              <button
+                onClick={() => navigate('/visita/demo')}
+                className="bg-concreto-800 hover:bg-concreto-700/80 text-aco-300 text-xs px-6 py-2.5 rounded border border-concreto-600/50 transition-all font-mono"
+              >
+                🧪 Testar Modo Demo (Offline)
+              </button>
+            </div>
           </div>
         )}
 
