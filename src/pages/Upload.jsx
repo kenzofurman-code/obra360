@@ -31,10 +31,50 @@ export default function Upload() {
   
   // Estado para Upload da Planta Baixa
   const [plantaFile, setPlantaFile] = useState(null)
+
+  // Estado para Importação de Trajetória JSON
+  const [jsonFile, setJsonFile] = useState(null)
+  const [waypoints, setWaypoints] = useState([])
   
   const [salvando, setSalvando] = useState(false)
   const [erro, setErro] = useState('')
   const [activeStep, setActiveStep] = useState(1) // 1, 2, 3
+
+  function handleJsonFileChange(e) {
+    const file = e.target.files[0]
+    if (!file) return
+
+    setJsonFile(file)
+    setErro('')
+
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      try {
+        const data = JSON.parse(event.target.result)
+        if (Array.isArray(data)) {
+          const valid = data.every(pt => typeof pt.t === 'number' && typeof pt.x === 'number' && typeof pt.y === 'number')
+          if (!valid) {
+            throw new Error('Formato inválido. O JSON deve conter objetos com t, x e y.')
+          }
+          const pts = data.map(pt => ({
+            t: pt.t,
+            x: pt.x,
+            y: pt.y,
+            label: '',
+            observacao: ''
+          }))
+          setWaypoints(pts)
+        } else {
+          throw new Error('O JSON deve ser um array.')
+        }
+      } catch (err) {
+        setErro('Erro ao ler arquivo de trajetória: ' + err.message)
+        setJsonFile(null)
+        setWaypoints([])
+      }
+    }
+    reader.readAsText(file)
+  }
 
   function set(k, v) { setForm(prev => ({ ...prev, [k]: v })) }
 
@@ -120,6 +160,7 @@ export default function Upload() {
               thumbnail_url: thumbnailUrl,
               planta_url: finalPlantaUrl,
               duracao_segundos: parseInt(form.duracao_segundos) || 0,
+              waypoints: waypoints,
             })
             navigate(`/visita/${id}`)
           } catch (e) {
@@ -169,6 +210,7 @@ export default function Upload() {
         thumbnail_url: form.thumbnail_url.trim() || null,
         planta_url: finalPlantaUrl,
         duracao_segundos: parseInt(form.duracao_segundos) || 0,
+        waypoints: waypoints,
       })
       navigate(`/visita/${id}`)
     } catch (e) {
@@ -334,6 +376,35 @@ export default function Upload() {
                 placeholder="Ou cole uma URL ex: https://pub-xxx.r2.dev/planta.png"
                 className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2 text-xs text-aco-200 mt-2 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
               />
+            )}
+          </Field>
+
+          {/* Trajetória Automática JSON (Gerada via Python) */}
+          <Field label="Importar Trajetória (.json do Python) - Opcional" hint="Carregue o arquivo de trajetória calculado localmente">
+            {jsonFile ? (
+              <div className="flex items-center justify-between bg-concreto-800 border border-concreto-700 p-2.5 rounded-lg text-xs">
+                <span className="font-mono text-aco-200 truncate">{jsonFile.name}</span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setJsonFile(null)
+                    setWaypoints([])
+                  }}
+                  className="text-alerta text-xs hover:underline font-mono bg-transparent border-0 cursor-pointer"
+                >
+                  Remover
+                </button>
+              </div>
+            ) : (
+              <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded-lg p-3 bg-concreto-800/10 text-center cursor-pointer transition-all">
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={handleJsonFileChange}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                <span className="text-xs text-aco-300">Selecionar arquivo caminho_vistoria.json</span>
+              </div>
             )}
           </Field>
 

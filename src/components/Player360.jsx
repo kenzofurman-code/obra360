@@ -1,8 +1,7 @@
 // src/components/Player360.jsx
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import videojs from 'video.js'
 import * as THREE from 'three'
-import 'videojs-vr'
 
 /**
  * Player 360° com HLS via Video.js + plugin VR.
@@ -23,52 +22,64 @@ export default function Player360({
   const animFrameRef = useRef(null)
   const line3DRef = useRef(null)
   const sceneRef = useRef(null)
+  const [playerReady, setPlayerReady] = useState(false)
 
   // Inicialização do Player
   useEffect(() => {
-    if (!videoRef.current || !hlsUrl) return
-    const isHls = hlsUrl.includes('.m3u8')
-    const type = isHls ? 'application/x-mpegURL' : 'video/mp4'
+    let active = true
+    let player = null
 
-    if (playerRef.current) {
-      playerRef.current.src({ src: hlsUrl, type })
-      return
+    const initPlayer = async () => {
+      // Garante que o videojs global exista antes de carregar o plugin
+      window.videojs = videojs
+      await import('videojs-vr')
+
+      if (!active) return
+      if (!videoRef.current || !hlsUrl) return
+
+      const isHls = hlsUrl.includes('.m3u8')
+      const type = isHls ? 'application/x-mpegURL' : 'video/mp4'
+
+      player = videojs(videoRef.current, {
+        controls: true,
+        autoplay,
+        preload: 'auto',
+        fluid: true,
+        html5: {
+          vhs: {
+            overrideNative: true,
+            enableLowInitialPlaylist: true,
+          },
+        },
+        sources: [{ src: hlsUrl, type }],
+      })
+
+      // Ativa o plugin VR (equiretangular 360°)
+      player.vr({
+        projection: '360',
+        motionControls: false, // desativa giroscópio no desktop
+        debug: false,
+      })
+
+      playerRef.current = player
+      setPlayerReady(true)
+
+      player.ready(() => {
+        if (onReady && active) onReady(player)
+      })
     }
 
-    const player = videojs(videoRef.current, {
-      controls: true,
-      autoplay,
-      preload: 'auto',
-      fluid: true,
-      html5: {
-        vhs: {
-          overrideNative: true,
-          enableLowInitialPlaylist: true,
-        },
-      },
-      sources: [{ src: hlsUrl, type }],
-    })
-
-    // Ativa o plugin VR (equiretangular 360°)
-    player.vr({
-      projection: '360',
-      motionControls: false, // desativa giroscópio no desktop
-      debug: false,
-    })
-
-    playerRef.current = player
-
-    player.ready(() => {
-      if (onReady) onReady(player)
-    })
+    initPlayer()
 
     return () => {
-      if (playerRef.current && !playerRef.current.isDisposed()) {
-        playerRef.current.dispose()
-        playerRef.current = null
+      active = false
+      setPlayerReady(false)
+      if (player && !player.isDisposed()) {
+        player.dispose()
       }
+      playerRef.current = null
     }
-  }, [hlsUrl]) // eslint-disable-line
+  }, [hlsUrl, autoplay]) // eslint-disable-line
 
   // Loop de Renderização / Atualização da Passarela 3D no chão do vídeo
   useEffect(() => {
@@ -187,7 +198,7 @@ export default function Player360({
         line3DRef.current = null
       }
     }
-  }, [waypoints, posicao, headingOffset, lineOpacity, lineThickness])
+  }, [playerReady, waypoints, posicao, headingOffset, lineOpacity, lineThickness])
 
   if (!hlsUrl) {
     return (

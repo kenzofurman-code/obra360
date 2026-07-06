@@ -24,7 +24,7 @@ export async function getVisita(id) {
 
 // ── Escrita ──────────────────────────────────────────────────────────────────
 
-export async function criarVisita({ pavimento, hls_url, thumbnail_url, planta_url, duracao_segundos }) {
+export async function criarVisita({ pavimento, hls_url, thumbnail_url, planta_url, duracao_segundos, waypoints = [] }) {
   const ref = await addDoc(collection(db, COL), {
     pavimento,
     hls_url,                          // URL do index.m3u8 no R2
@@ -34,7 +34,7 @@ export async function criarVisita({ pavimento, hls_url, thumbnail_url, planta_ur
     heading_offset: 0,                // Azimute/Norte calibrado
     ancora1: null,                    // Ponto de referência 1 {x, y}
     ancora2: null,                    // Ponto de referência 2 {x, y}
-    waypoints: [],
+    waypoints: waypoints || [],
     status: 'ready',
     data: serverTimestamp(),
   })
