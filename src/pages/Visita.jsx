@@ -35,6 +35,7 @@ export default function Visita() {
   const [ancora2, setAncora2] = useState(null)
   const [isImported, setIsImported] = useState(false)
   const [pathScale, setPathScale] = useState(0.15)
+  const [espelharCaminho, setEspelharCaminho] = useState(false)
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
   const [listaVisitas, setListaVisitas] = useState([])
@@ -74,7 +75,9 @@ export default function Visita() {
         const angleA = Math.atan2(dAy, dAx)
         const rotation = angleA - angleW
 
-        const dx = pt.x - W1.x
+        // Aplica espelhamento horizontal se ativado
+        const rawDx = pt.x - W1.x
+        const dx = espelharCaminho ? -rawDx : rawDx
         const dy = pt.y - W1.y
 
         const rx = (dx * Math.cos(rotation) - dy * Math.sin(rotation)) * scale
@@ -93,7 +96,8 @@ export default function Visita() {
       const W1 = sorted[0]
       const theta = (headingOffset * Math.PI) / 180
 
-      const dx = pt.x - W1.x
+      const rawDx = pt.x - W1.x
+      const dx = espelharCaminho ? -rawDx : rawDx
       const dy = pt.y - W1.y
 
       const rx = (dx * Math.cos(theta) - dy * Math.sin(theta)) * pathScale
@@ -109,7 +113,8 @@ export default function Visita() {
     if (waypoints.length > 0) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
-      const dx = pt.x - W1.x
+      const rawDx = pt.x - W1.x
+      const dx = espelharCaminho ? -rawDx : rawDx
       const dy = pt.y - W1.y
       return {
         x: 0.5 + dx * pathScale,
@@ -118,7 +123,7 @@ export default function Visita() {
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho])
 
   const waypointsAlinhados = useMemo(() => {
     return waypoints.map(alinharPonto)
@@ -175,6 +180,7 @@ export default function Visita() {
       setAncora2(v.ancora2 || null)
       setIsImported(v.is_imported || false)
       setPathScale(v.path_scale ?? 0.15)
+      setEspelharCaminho(v.espelhar_caminho || false)
     })
   }, [id, navigate])
 
@@ -304,6 +310,7 @@ export default function Visita() {
         ancora1,
         ancora2,
         path_scale: pathScale,
+        espelhar_caminho: espelharCaminho,
       })
       mostrarToast('Alterações salvas com sucesso!')
     } catch (e) {
@@ -421,6 +428,7 @@ export default function Visita() {
             headingOffset={headingOffset}
             lineOpacity={lineOpacity}
             lineThickness={lineThickness}
+            espelharCaminho={espelharCaminho}
           />
         </div>
 
@@ -705,24 +713,40 @@ export default function Visita() {
 
             {/* Slider de Tamanho da Trajetória (apenas se for trajetória importada) */}
             {isImported && (
-              <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
-                <div className="flex justify-between items-center text-xs font-mono">
-                  <span className="text-aco-300 font-medium text-[11px]">Tamanho do Caminho (Escala)</span>
-                  <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{Math.round(pathScale * 100)}%</span>
+              <>
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Tamanho do Caminho (Escala)</span>
+                    <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{Math.round(pathScale * 100)}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="3"
+                    max="50"
+                    step="1"
+                    value={Math.round(pathScale * 100)}
+                    onChange={e => setPathScale(parseFloat(e.target.value) / 100)}
+                    className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                  />
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Aumenta ou diminui a escala do trajeto para caber na planta baixa.
+                  </p>
                 </div>
-                <input
-                  type="range"
-                  min="3"
-                  max="50"
-                  step="1"
-                  value={Math.round(pathScale * 100)}
-                  onChange={e => setPathScale(parseFloat(e.target.value) / 100)}
-                  className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
-                />
-                <p className="text-[9px] text-aco-400 leading-normal font-mono">
-                  Aumenta ou diminui a escala do trajeto para caber na planta baixa.
-                </p>
-              </div>
+
+                {/* Toggle de Espelhamento Horizontal */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex items-center justify-between shrink-0 font-mono text-xs">
+                  <span className="text-aco-300 text-[11px]">Espelhar Trajetória (Inverter E/D)</span>
+                  <label className="relative inline-flex items-center cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={espelharCaminho}
+                      onChange={e => setEspelharCaminho(e.target.checked)}
+                      className="sr-only peer"
+                    />
+                    <div className="w-9 h-5 bg-concreto-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-aco-200 after:border-concreto-700 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sinal-500 peer-checked:after:bg-concreto-950"></div>
+                  </label>
+                </div>
+              </>
             )}
 
             {/* Editor de Waypoints */}

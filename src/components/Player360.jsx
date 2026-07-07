@@ -16,6 +16,7 @@ export default function Player360({
   headingOffset = 0,
   lineOpacity = 80,
   lineThickness = 1.0,
+  espelharCaminho = false,
 }) {
   const videoRef = useRef(null)
   const playerRef = useRef(null)
@@ -125,7 +126,8 @@ export default function Player360({
             // 1. Gera os pontos centrais tridimensionais do caminho no chão
             const sorted = [...waypoints].sort((a, b) => a.t - b.t)
             const pathPoints = sorted.map(wp => {
-              const dx = (wp.x - xc) * 22
+              const rawDx = (wp.x - xc) * 22
+              const dx = espelharCaminho ? -rawDx : rawDx
               const dy = (wp.y - yc) * 22
               const rx = dx * cos - dy * sin
               const rz = dx * sin + dy * cos
@@ -198,7 +200,7 @@ export default function Player360({
         line3DRef.current = null
       }
     }
-  }, [playerReady, waypoints, posicao, headingOffset, lineOpacity, lineThickness])
+  }, [playerReady, waypoints, posicao, headingOffset, lineOpacity, lineThickness, espelharCaminho])
 
   if (!hlsUrl) {
     return (
