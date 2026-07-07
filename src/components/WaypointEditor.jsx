@@ -15,6 +15,7 @@ export default function WaypointEditor({
   onToggleModo,
   onRemover,
   onSalvar,
+  onExportar,
   onClickWaypoint,
   pendente,
   onConfirmarPendente,
@@ -284,14 +285,23 @@ export default function WaypointEditor({
         </div>
       )}
 
-      {/* Salvar */}
-      <div className="px-3 py-3 border-t border-concreto-700 bg-concreto-950/20">
+      {/* Salvar & Exportar */}
+      <div className="px-3 py-3 border-t border-concreto-700 bg-concreto-950/20 flex flex-col gap-2">
         <button
           onClick={onSalvar}
           className="w-full bg-ok hover:bg-ok/90 active:scale-[0.98] text-concreto-950 font-semibold text-xs py-2.5 rounded transition-all"
         >
           Salvar Alterações
         </button>
+        {onExportar && (
+          <button
+            onClick={onExportar}
+            className="w-full bg-concreto-800 hover:bg-concreto-750 active:scale-[0.98] text-aco-200 border border-concreto-700 font-mono text-[10px] py-2 rounded transition-all"
+            title="Exportar dados de trajetória como arquivo JSON para calibração"
+          >
+            📥 Exportar Trajetória (Gabarito JSON)
+          </button>
+        )}
       </div>
     </div>
   )

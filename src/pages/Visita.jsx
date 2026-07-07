@@ -320,6 +320,31 @@ export default function Visita() {
     }
   }
 
+  function exportarTrajetoria() {
+    if (!waypointsAlinhados || waypointsAlinhados.length === 0) {
+      mostrarToast('Nenhum waypoint cadastrado para exportar.', 'erro')
+      return
+    }
+    // Filtra para exportar apenas os dados limpos de trajetória
+    const pureWaypoints = waypointsAlinhados.map(wp => ({
+      t: wp.t,
+      x: wp.x,
+      y: wp.y,
+      label: wp.label || '',
+      observacao: wp.observacao || ''
+    }))
+    
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(pureWaypoints, null, 2))
+    const downloadAnchor = document.createElement('a')
+    downloadAnchor.setAttribute("href", dataStr)
+    const fileName = `gabarito_trajetoria_${visita?.pavimento?.replace(/\s+/g, '_').toLowerCase() || 'vistoria'}.json`
+    downloadAnchor.setAttribute("download", fileName)
+    document.body.appendChild(downloadAnchor)
+    downloadAnchor.click()
+    downloadAnchor.remove()
+    mostrarToast('JSON de trajetória exportado!')
+  }
+
   function handleToggleCalibrarAncoras(tipo) {
     if (modoCalibrarAncoras === tipo) {
       setModoCalibrarAncoras(null)
@@ -759,6 +784,7 @@ export default function Visita() {
                 onToggleModo={() => { setModoAdicionar(v => !v); setPendente(null) }}
                 onRemover={removerWaypoint}
                 onSalvar={salvar}
+                onExportar={exportarTrajetoria}
                 onClickWaypoint={pularParaWaypoint}
                 pendente={pendente}
                 onConfirmarPendente={confirmarPendente}
