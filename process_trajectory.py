@@ -14,8 +14,8 @@ except ImportError:
 
 def extract_trajectory(video_path, sample_rate=0.5):
     """
-    Processa o video e extrai a trajetoria 2D usando um modelo robusto de
-    Odometria Visual 2D (Yaw-only e velocidade adaptativa por fluxo optico).
+    Processa o video e extrai a trajetoria 2D usando um algoritmo robusto de
+    Odometria Visual Baseada em Keyframes (K-VO), semelhante a metodologias industriais.
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -54,25 +54,32 @@ def extract_trajectory(video_path, sample_rate=0.5):
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
     )
 
-    # Estado da trajetoria 2D
+    # Detector de cantos FAST
+    detector = cv2.FastFeatureDetector_create(threshold=25, nonmaxSuppression=True)
+
+    # Estado global acumulado da trajetoria
     pos_x = 0.0
     pos_y = 0.0
-    yaw = 0.0  # Angulo acumulado de direcao (azimute relativo)
+    yaw = 0.0  # Direcao acumulada
 
-    ret, prev_frame = cap.read()
+    ret, frame = cap.read()
     if not ret:
         print("Erro ao ler o primeiro frame do video.")
         cap.release()
         return None
 
     # Corta a area central e converte para escala de cinza
-    prev_crop = prev_frame[y_offset:y_offset+h_crop, x_offset:x_offset+w_crop]
-    prev_gray = cv2.cvtColor(prev_crop, cv2.COLOR_BGR2GRAY)
+    crop = frame[y_offset:y_offset+h_crop, x_offset:x_offset+w_crop]
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
 
-    # Detecta pontos de interesse iniciais (FAST)
-    detector = cv2.FastFeatureDetector_create(threshold=25, nonmaxSuppression=True)
-    prev_pts = detector.detect(prev_gray)
-    prev_pts = np.array([p.pt for p in prev_pts], dtype=np.float32).reshape(-1, 1, 2)
+    # Inicializa o primeiro Keyframe (KF)
+    kf_gray = gray.copy()
+    kf_pts = detector.detect(kf_gray)
+    kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
+    
+    kf_pos_x = 0.0
+    kf_pos_y = 0.0
+    kf_yaw = 0.0
 
     waypoints = []
     frame_idx = 1
@@ -86,7 +93,7 @@ def extract_trajectory(video_path, sample_rate=0.5):
 
     last_sampled_time = 0.0
 
-    print("Processando trajetoria (este processo pode demorar alguns minutos)...")
+    print("Processando trajetoria por Keyframes (K-VO)...")
 
     try:
         while True:
@@ -97,72 +104,77 @@ def extract_trajectory(video_path, sample_rate=0.5):
             # Crop e escala de cinza
             crop = frame[y_offset:y_offset+h_crop, x_offset:x_offset+w_crop]
             gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
-            
             current_time = frame_idx / fps
 
-            # Se nao houver pontos suficientes para rastrear, detecta novos
-            if len(prev_pts) < 150:
-                new_pts = detector.detect(prev_gray)
-                if new_pts:
-                    new_pts_arr = np.array([p.pt for p in new_pts], dtype=np.float32).reshape(-1, 1, 2)
-                    prev_pts = np.vstack((prev_pts, new_pts_arr))
+            # Se o keyframe atual tiver pouquissimos pontos para rastrear, re-detecta nele
+            if len(kf_pts) < 50:
+                kf_pts = detector.detect(kf_gray)
+                kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
 
-            if len(prev_pts) > 0:
-                # Rastreia os pontos usando Optical Flow
-                curr_pts, status, err = cv2.calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, None, **lk_params)
+            if len(kf_pts) > 10:
+                # Rastreia do Keyframe atual para o Frame Corrente
+                curr_pts, status, err = cv2.calcOpticalFlowPyrLK(kf_gray, gray, kf_pts, None, **lk_params)
 
                 if curr_pts is not None and status is not None:
-                    # Filtra os pontos rastreados com sucesso
-                    good_prev = prev_pts[status == 1]
+                    # Filtra os pontos rastreados com sucesso a partir do Keyframe
+                    good_kf = kf_pts[status == 1]
                     good_curr = curr_pts[status == 1]
 
-                    if len(good_prev) > 10:
-                        # 1. Calcula o deslocamento medio em pixels para detectar velocidade e pausas
-                        displacements = np.sqrt(np.sum((good_curr - good_prev) ** 2, axis=1))
-                        avg_displacement = np.mean(displacements)
+                    tracking_ratio = len(good_curr) / len(kf_pts) if len(kf_pts) > 0 else 0
 
-                        # Filtro de ruido
-                        if avg_displacement > 1.8:
-                            # Estima a Matriz Essencial
-                            E, inliers = cv2.findEssentialMat(
-                                good_curr, good_prev, K, 
-                                method=cv2.RANSAC, prob=0.999, threshold=1.0
-                            )
+                    if len(good_curr) > 8:
+                        # Estima a Matriz Essencial entre o Keyframe e o Frame Atual
+                        E, inliers = cv2.findEssentialMat(
+                            good_curr, good_kf, K, 
+                            method=cv2.RANSAC, prob=0.999, threshold=1.0
+                        )
 
-                            if E is not None and E.shape == (3, 3):
-                                # Recupera a Rotacao e Translacao da camera
-                                _, R, t, mask = cv2.recoverPose(E, good_curr, good_prev, K)
+                        if E is not None and E.shape == (3, 3):
+                            # Recupera a Rotacao e Translacao do Frame em relacao ao Keyframe
+                            _, R, t, mask = cv2.recoverPose(E, good_curr, good_kf, K)
 
-                                if np.sum(mask) > 8:
-                                    # Extrai o angulo relativo de rotacao (Yaw)
-                                    theta = np.arctan2(R[0, 2], R[2, 2])
-                                    
-                                    # Limita a taxa de rotacao por frame
-                                    theta = np.clip(theta, -0.15, 0.15)
-                                    yaw += theta
+                            if np.sum(mask) > 5:
+                                # Rotacao relativa (Yaw) acumulada desde o Keyframe
+                                theta = np.arctan2(R[0, 2], R[2, 2])
+                                theta = np.clip(theta, -0.25, 0.25)
+                                yaw = kf_yaw + theta
 
-                                    # Vetor de translacao
-                                    tx = t[0, 0]
-                                    tz = t[2, 0]
+                                # Vetor de translacao
+                                tx = t[0, 0]
+                                tz = t[2, 0]
 
-                                    t_len = np.sqrt(tx*tx + tz*tz)
-                                    if t_len > 0:
-                                        tx /= t_len
-                                        tz /= t_len
+                                t_len = np.sqrt(tx*tx + tz*tz)
+                                if t_len > 0:
+                                    tx /= t_len
+                                    tz /= t_len
 
-                                    # A velocidade do passo e proporcional a taxa de mudanca de pixels
-                                    step = 0.0035 * avg_displacement
+                                # Deslocamento medio dos pixels do keyframe ao frame corrente
+                                displacements = np.sqrt(np.sum((good_curr - good_kf) ** 2, axis=1))
+                                avg_displacement = np.mean(displacements)
 
-                                    # Projeta e acumula no plano 2D usando a direcao (yaw) acumulada
-                                    dx = tx * np.cos(yaw) - tz * np.sin(yaw)
-                                    dy = tx * np.sin(yaw) + tz * np.cos(yaw)
+                                # Escala do passo acumulado desde o keyframe
+                                step = 0.0028 * avg_displacement
 
-                                    pos_x += step * dx
-                                    pos_y += step * dy
+                                # Projeta a translacao usando o Yaw do Keyframe
+                                dx = tx * np.cos(kf_yaw) - tz * np.sin(kf_yaw)
+                                dy = tx * np.sin(kf_yaw) + tz * np.cos(kf_yaw)
 
-                    # Prepara para o proximo frame
-                    prev_pts = good_curr.reshape(-1, 1, 2)
-            
+                                # Posição atual do frame no mundo 2D
+                                pos_x = kf_pos_x + step * dx
+                                pos_y = kf_pos_y + step * dy
+
+                    # SE A TAXA DE RASTREAMENTO CAIR ABAIXO DE 55%:
+                    # Criamos um NOVO Keyframe na posicao atual e re-iniciamos o tracking local.
+                    if tracking_ratio < 0.55 or len(good_curr) < 45:
+                        kf_gray = gray.copy()
+                        kf_pts = detector.detect(kf_gray)
+                        kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
+                        
+                        kf_pos_x = pos_x
+                        kf_pos_y = pos_y
+                        kf_yaw = yaw
+                        print(f"   [Keyframe] Criado no frame {frame_idx} (tempo {current_time:.1f}s)")
+
             # Guarda os pontos da trajetoria no intervalo do sample_rate (ex: a cada 0.5s)
             if current_time - last_sampled_time >= sample_rate:
                 waypoints.append({
@@ -171,14 +183,13 @@ def extract_trajectory(video_path, sample_rate=0.5):
                     "y": float(pos_y)
                 })
                 last_sampled_time = current_time
-                print(f"Progresso: {frame_idx}/{total_frames} frames ({current_time:.1f}s processados)")
+                print(f"Progresso: {frame_idx}/{total_frames} frames ({current_time:.1f}s)")
 
-            prev_gray = gray.copy()
             frame_idx += 1
             
     except Exception as e:
         print(f"\n[AVISO] O processamento de frames foi interrompido por um erro: {e}")
-        print("Salvando a trajetoria calculada ate o momento do erro...")
+        print("Salvando a trajetoria calculada ate o momento...")
         
     finally:
         cap.release()
