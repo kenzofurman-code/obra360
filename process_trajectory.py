@@ -111,7 +111,7 @@ def extract_trajectory(video_path, sample_rate=0.5):
                 # Rastreia os pontos usando Optical Flow
                 curr_pts, status, err = cv2.calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, None, **lk_params)
 
-                if status is not None:
+                if curr_pts is not None and status is not None:
                     # Filtra os pontos rastreados com sucesso
                     good_prev = prev_pts[status == 1]
                     good_curr = curr_pts[status == 1]
