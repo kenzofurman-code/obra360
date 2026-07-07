@@ -14,7 +14,8 @@ except ImportError:
 
 def extract_trajectory(video_path, sample_rate=0.5):
     """
-    Processa o video e extrai a trajetoria 2D (plano XZ) usando Odometria Visual Monocular.
+    Processa o video e extrai a trajetoria 2D usando um modelo robusto de
+    Odometria Visual 2D (Yaw-only e velocidade adaptativa por fluxo optico).
     """
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -55,9 +56,10 @@ def extract_trajectory(video_path, sample_rate=0.5):
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01)
     )
 
-    # Estado da trajetoria
-    pos = np.zeros((3, 1), dtype=np.float64)  # Posicao [X, Y, Z]
-    rot = np.eye(3, dtype=np.float64)        # Rotacao [3x3]
+    # Estado da trajetoria 2D
+    pos_x = 0.0
+    pos_y = 0.0
+    yaw = 0.0  # Angulo acumulado de direcao (azimute relativo)
 
     ret, prev_frame = cap.read()
     if not ret:
@@ -79,8 +81,8 @@ def extract_trajectory(video_path, sample_rate=0.5):
     # Salva o ponto inicial (tempo = 0s)
     waypoints.append({
         "t": 0.0,
-        "x": float(pos[0, 0]),
-        "y": float(pos[2, 0]) # Usamos o eixo Z do SLAM como o Y da planta 2D
+        "x": pos_x,
+        "y": pos_y
     })
 
     last_sampled_time = 0.0
@@ -113,30 +115,56 @@ def extract_trajectory(video_path, sample_rate=0.5):
         good_curr = curr_pts[status == 1]
 
         if len(good_prev) > 10:
-            # Estima a Matriz Essencial
-            E, inliers = cv2.findEssentialMat(
-                good_curr, good_prev, K, 
-                method=cv2.RANSAC, prob=0.999, threshold=1.0
-            )
+            # 1. Calcula o deslocamento médio em pixels para detectar velocidade e pausas
+            displacements = np.sqrt(np.sum((good_curr - good_prev) ** 2, axis=1))
+            avg_displacement = np.mean(displacements)
 
-            if E is not None and E.shape == (3, 3):
-                # Recupera a Rotacao e Translacao da camera
-                _, R, t, mask = cv2.recoverPose(E, good_curr, good_prev, K)
+            # Filtro de ruído: se mover muito pouco (ex: camera tremendo mas parado), assume velocidade = 0
+            if avg_displacement > 1.8:
+                # Estima a Matriz Essencial
+                E, inliers = cv2.findEssentialMat(
+                    good_curr, good_prev, K, 
+                    method=cv2.RANSAC, prob=0.999, threshold=1.0
+                )
 
-                # Mantem escala unitaria constante ja que a escala real do SLAM monocular e ambigua
-                scale = 0.08  # Constante de passo aproximada por frame
+                if E is not None and E.shape == (3, 3):
+                    # Recupera a Rotacao e Translacao da camera
+                    _, R, t, mask = cv2.recoverPose(E, good_curr, good_prev, K)
 
-                # Atualiza posicao e orientacao se houver inliers suficientes
-                if np.sum(mask) > 5:
-                    pos = pos + scale * rot.dot(t)
-                    rot = R.dot(rot)
+                    if np.sum(mask) > 8:
+                        # Extrai o angulo relativo de rotacao (Yaw) em torno do eixo Y da camera
+                        theta = np.arctan2(R[0, 2], R[2, 2])
+                        
+                        # Limita a taxa de rotacao por frame para evitar giros falsos bruscos por ruido
+                        theta = np.clip(theta, -0.15, 0.15)
+                        yaw += theta
+
+                        # Vetor de translacao no plano XZ da camera
+                        tx = t[0, 0]
+                        tz = t[2, 0]
+
+                        # Normaliza vetor de direcao
+                        t_len = np.sqrt(tx*tx + tz*tz)
+                        if t_len > 0:
+                            tx /= t_len
+                            tz /= t_len
+
+                        # A velocidade do passo e proporcional a taxa de mudanca de pixels
+                        step = 0.0035 * avg_displacement
+
+                        # Projeta e acumula no plano 2D usando a direcao (yaw) acumulada
+                        dx = tx * np.cos(yaw) - tz * np.sin(yaw)
+                        dy = tx * np.sin(yaw) + tz * np.cos(yaw)
+
+                        pos_x += step * dx
+                        pos_y += step * dy
 
         # Guarda os pontos da trajetoria no intervalo do sample_rate (ex: a cada 0.5s)
         if current_time - last_sampled_time >= sample_rate:
             waypoints.append({
                 "t": round(current_time, 1),
-                "x": float(pos[0, 0]),
-                "y": float(pos[2, 0]) # Projecao do plano Z (profundidade)
+                "x": float(pos_x),
+                "y": float(pos_y)
             })
             last_sampled_time = current_time
             print(f"Progresso: {frame_idx}/{total_frames} frames ({current_time:.1f}s processados)")
@@ -159,7 +187,6 @@ def extract_trajectory(video_path, sample_rate=0.5):
             
     if max_dist > 0:
         # Normaliza a trajetoria para que o ponto mais distante do inicio esteja a exatamente 2.0 unidades
-        # Isso mantem a passarela 3D estavel no Three.js e evita que ela tenda ao infinito no horizonte
         scale_factor = 2.0 / max_dist
         for wp in waypoints:
             wp["x"] *= scale_factor
