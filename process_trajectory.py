@@ -31,8 +31,6 @@ def extract_trajectory(video_path, sample_rate=0.5):
     print(f"Video carregado: {width}x{height} @ {fps:.2f} FPS ({total_frames} frames)")
 
     # Define a regiao da camera de perspectiva (crop central de 90 graus FOV)
-    # 360 horizontal = width, entao 90 graus = width / 4
-    # 180 vertical = height, entao 90 graus = height / 2
     w_crop = width // 4
     h_crop = height // 2
     
@@ -64,6 +62,7 @@ def extract_trajectory(video_path, sample_rate=0.5):
     ret, prev_frame = cap.read()
     if not ret:
         print("Erro ao ler o primeiro frame do video.")
+        cap.release()
         return None
 
     # Corta a area central e converte para escala de cinza
@@ -89,96 +88,104 @@ def extract_trajectory(video_path, sample_rate=0.5):
 
     print("Processando trajetoria (este processo pode demorar alguns minutos)...")
 
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        # Crop e escala de cinza
-        crop = frame[y_offset:y_offset+h_crop, x_offset:x_offset+w_crop]
-        gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            # Crop e escala de cinza
+            crop = frame[y_offset:y_offset+h_crop, x_offset:x_offset+w_crop]
+            gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+            
+            current_time = frame_idx / fps
+
+            # Se nao houver pontos suficientes para rastrear, detecta novos
+            if len(prev_pts) < 150:
+                new_pts = detector.detect(prev_gray)
+                if new_pts:
+                    new_pts_arr = np.array([p.pt for p in new_pts], dtype=np.float32).reshape(-1, 1, 2)
+                    prev_pts = np.vstack((prev_pts, new_pts_arr))
+
+            if len(prev_pts) > 0:
+                # Rastreia os pontos usando Optical Flow
+                curr_pts, status, err = cv2.calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, None, **lk_params)
+
+                if status is not None:
+                    # Filtra os pontos rastreados com sucesso
+                    good_prev = prev_pts[status == 1]
+                    good_curr = curr_pts[status == 1]
+
+                    if len(good_prev) > 10:
+                        # 1. Calcula o deslocamento medio em pixels para detectar velocidade e pausas
+                        displacements = np.sqrt(np.sum((good_curr - good_prev) ** 2, axis=1))
+                        avg_displacement = np.mean(displacements)
+
+                        # Filtro de ruido
+                        if avg_displacement > 1.8:
+                            # Estima a Matriz Essencial
+                            E, inliers = cv2.findEssentialMat(
+                                good_curr, good_prev, K, 
+                                method=cv2.RANSAC, prob=0.999, threshold=1.0
+                            )
+
+                            if E is not None and E.shape == (3, 3):
+                                # Recupera a Rotacao e Translacao da camera
+                                _, R, t, mask = cv2.recoverPose(E, good_curr, good_prev, K)
+
+                                if np.sum(mask) > 8:
+                                    # Extrai o angulo relativo de rotacao (Yaw)
+                                    theta = np.arctan2(R[0, 2], R[2, 2])
+                                    
+                                    # Limita a taxa de rotacao por frame
+                                    theta = np.clip(theta, -0.15, 0.15)
+                                    yaw += theta
+
+                                    # Vetor de translacao
+                                    tx = t[0, 0]
+                                    tz = t[2, 0]
+
+                                    t_len = np.sqrt(tx*tx + tz*tz)
+                                    if t_len > 0:
+                                        tx /= t_len
+                                        tz /= t_len
+
+                                    # A velocidade do passo e proporcional a taxa de mudanca de pixels
+                                    step = 0.0035 * avg_displacement
+
+                                    # Projeta e acumula no plano 2D usando a direcao (yaw) acumulada
+                                    dx = tx * np.cos(yaw) - tz * np.sin(yaw)
+                                    dy = tx * np.sin(yaw) + tz * np.cos(yaw)
+
+                                    pos_x += step * dx
+                                    pos_y += step * dy
+
+                    # Prepara para o proximo frame
+                    prev_pts = good_curr.reshape(-1, 1, 2)
+            
+            # Guarda os pontos da trajetoria no intervalo do sample_rate (ex: a cada 0.5s)
+            if current_time - last_sampled_time >= sample_rate:
+                waypoints.append({
+                    "t": round(current_time, 1),
+                    "x": float(pos_x),
+                    "y": float(pos_y)
+                })
+                last_sampled_time = current_time
+                print(f"Progresso: {frame_idx}/{total_frames} frames ({current_time:.1f}s processados)")
+
+            prev_gray = gray.copy()
+            frame_idx += 1
+            
+    except Exception as e:
+        print(f"\n[AVISO] O processamento de frames foi interrompido por um erro: {e}")
+        print("Salvando a trajetoria calculada ate o momento do erro...")
         
-        current_time = frame_idx / fps
-
-        # Se nao houver pontos suficientes para rastrear, detecta novos
-        if len(prev_pts) < 150:
-            new_pts = detector.detect(prev_gray)
-            if new_pts:
-                new_pts_arr = np.array([p.pt for p in new_pts], dtype=np.float32).reshape(-1, 1, 2)
-                prev_pts = np.vstack((prev_pts, new_pts_arr))
-
-        # Rastreia os pontos usando Optical Flow
-        curr_pts, status, err = cv2.calcOpticalFlowPyrLK(prev_gray, gray, prev_pts, None, **lk_params)
-
-        # Filtra os pontos rastreados com sucesso
-        good_prev = prev_pts[status == 1]
-        good_curr = curr_pts[status == 1]
-
-        if len(good_prev) > 10:
-            # 1. Calcula o deslocamento médio em pixels para detectar velocidade e pausas
-            displacements = np.sqrt(np.sum((good_curr - good_prev) ** 2, axis=1))
-            avg_displacement = np.mean(displacements)
-
-            # Filtro de ruído: se mover muito pouco (ex: camera tremendo mas parado), assume velocidade = 0
-            if avg_displacement > 1.8:
-                # Estima a Matriz Essencial
-                E, inliers = cv2.findEssentialMat(
-                    good_curr, good_prev, K, 
-                    method=cv2.RANSAC, prob=0.999, threshold=1.0
-                )
-
-                if E is not None and E.shape == (3, 3):
-                    # Recupera a Rotacao e Translacao da camera
-                    _, R, t, mask = cv2.recoverPose(E, good_curr, good_prev, K)
-
-                    if np.sum(mask) > 8:
-                        # Extrai o angulo relativo de rotacao (Yaw) em torno do eixo Y da camera
-                        theta = np.arctan2(R[0, 2], R[2, 2])
-                        
-                        # Limita a taxa de rotacao por frame para evitar giros falsos bruscos por ruido
-                        theta = np.clip(theta, -0.15, 0.15)
-                        yaw += theta
-
-                        # Vetor de translacao no plano XZ da camera
-                        tx = t[0, 0]
-                        tz = t[2, 0]
-
-                        # Normaliza vetor de direcao
-                        t_len = np.sqrt(tx*tx + tz*tz)
-                        if t_len > 0:
-                            tx /= t_len
-                            tz /= t_len
-
-                        # A velocidade do passo e proporcional a taxa de mudanca de pixels
-                        step = 0.0035 * avg_displacement
-
-                        # Projeta e acumula no plano 2D usando a direcao (yaw) acumulada
-                        dx = tx * np.cos(yaw) - tz * np.sin(yaw)
-                        dy = tx * np.sin(yaw) + tz * np.cos(yaw)
-
-                        pos_x += step * dx
-                        pos_y += step * dy
-
-        # Guarda os pontos da trajetoria no intervalo do sample_rate (ex: a cada 0.5s)
-        if current_time - last_sampled_time >= sample_rate:
-            waypoints.append({
-                "t": round(current_time, 1),
-                "x": float(pos_x),
-                "y": float(pos_y)
-            })
-            last_sampled_time = current_time
-            print(f"Progresso: {frame_idx}/{total_frames} frames ({current_time:.1f}s processados)")
-
-        # Prepara para o proximo frame
-        prev_gray = gray.copy()
-        prev_pts = good_curr.reshape(-1, 1, 2)
-        frame_idx += 1
-
-    cap.release()
+    finally:
+        cap.release()
+        
     print("Processamento concluido!")
 
     # NORMALIZACAO DA ESCALA DO CAMINHO
-    # Encontra a maior distancia em relacao ao ponto inicial (0,0) para escalar de forma previsivel
     max_dist = 0.0
     for wp in waypoints:
         dist = np.sqrt(wp["x"]**2 + wp["y"]**2)
@@ -186,7 +193,6 @@ def extract_trajectory(video_path, sample_rate=0.5):
             max_dist = dist
             
     if max_dist > 0:
-        # Normaliza a trajetoria para que o ponto mais distante do inicio esteja a exatamente 2.0 unidades
         scale_factor = 2.0 / max_dist
         for wp in waypoints:
             wp["x"] *= scale_factor
@@ -208,11 +214,14 @@ def main():
 
     waypoints = extract_trajectory(args.video, sample_rate=args.rate)
     
-    if waypoints:
-        with open(args.out, 'w', encoding='utf-8') as f:
-            json.dump(waypoints, f, indent=2)
-        print(f"Trajetoria salva com sucesso em: {args.out}")
-        print("Agora voce pode subir este arquivo JSON no site do Obra360 junto com o seu video!")
+    if waypoints and len(waypoints) > 0:
+        try:
+            with open(args.out, 'w', encoding='utf-8') as f:
+                json.dump(waypoints, f, indent=2)
+            print(f"Trajetoria salva com sucesso em: {args.out}")
+            print("Agora voce pode subir este arquivo JSON no site do Obra360 junto com o seu video!")
+        except Exception as file_error:
+            print(f"Erro ao salvar arquivo JSON: {file_error}")
     else:
         print("Falha ao gerar a trajetoria.")
 
