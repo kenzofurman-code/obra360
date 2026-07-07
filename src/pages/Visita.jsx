@@ -1,5 +1,5 @@
 // src/pages/Visita.jsx
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Player360 from '../components/Player360'
 import PlantaViewer from '../components/PlantaViewer'
