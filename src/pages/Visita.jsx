@@ -84,6 +84,7 @@ export default function Visita() {
         const ry = (dx * Math.sin(rotation) + dy * Math.cos(rotation)) * scale
 
         return {
+          ...pt,
           x: ancora1.x + rx,
           y: ancora1.y + ry
         }
@@ -104,6 +105,7 @@ export default function Visita() {
       const ry = (dx * Math.sin(theta) + dy * Math.cos(theta)) * pathScale
 
       return {
+        ...pt,
         x: ancora1.x + rx,
         y: ancora1.y + ry
       }
@@ -117,6 +119,7 @@ export default function Visita() {
       const dx = espelharCaminho ? -rawDx : rawDx
       const dy = pt.y - W1.y
       return {
+        ...pt,
         x: 0.5 + dx * pathScale,
         y: 0.5 + dy * pathScale
       }
