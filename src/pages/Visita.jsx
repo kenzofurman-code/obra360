@@ -133,7 +133,46 @@ export default function Visita() {
     if (!pt) return null
     if (!isImported) return pt
 
-    // Inverso por 1 âncora + Escala + Giro da Bússola
+    // 1. Inverso por 2 âncoras (Procrustes 2D)
+    if (ancora1 && ancora2 && waypoints.length > 1) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      const W1 = sorted[0]
+      const W2 = sorted[sorted.length - 1]
+
+      const dWx = W2.x - W1.x
+      const dWy = W2.y - W1.y
+      const distW = Math.sqrt(dWx * dWx + dWy * dWy)
+
+      const dAx = ancora2.x - ancora1.x
+      const dAy = ancora2.y - ancora1.y
+      const distA = Math.sqrt(dAx * dAx + dAy * dAy)
+
+      if (distW > 0 && distA > 0) {
+        const scale = distA / distW
+        const angleW = Math.atan2(dWy, dWx)
+        const angleA = Math.atan2(dAy, dAx)
+        const rotation = angleA - angleW
+        const invRotation = -rotation
+
+        const dx = pt.x - ancora1.x
+        const dy = pt.y - ancora1.y
+
+        // Aplica a rotação inversa no vetor de diferença
+        const rx = (dx * Math.cos(invRotation) - dy * Math.sin(invRotation)) / scale
+        const ry = (dx * Math.sin(invRotation) + dy * Math.cos(invRotation)) / scale
+
+        // Desfaz o espelhamento horizontal se ativado
+        const finalRx = espelharCaminho ? -rx : rx
+
+        return {
+          ...pt,
+          x: W1.x + finalRx,
+          y: W1.y + ry
+        }
+      }
+    }
+
+    // 2. Inverso por 1 âncora + Escala + Giro da Bússola
     if (ancora1 && waypoints.length > 0) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
@@ -156,7 +195,7 @@ export default function Visita() {
       }
     }
 
-    // Sem âncora (reverso da centralização padrão)
+    // 3. Sem nenhuma âncora (reverso da centralização padrão)
     if (waypoints.length > 0) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
@@ -171,7 +210,7 @@ export default function Visita() {
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, headingOffset, pathScale, espelharCaminho])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho])
 
   const waypointsAlinhados = useMemo(() => {
     return waypoints.map(alinharPonto)
