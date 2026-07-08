@@ -18,6 +18,7 @@ export default function PlantaViewer({
   ancora1,
   ancora2,
   visitaSobreposta = null, // { planta_url, ancora1, ancora2 }
+  espelharCaminho = false,
 }) {
   const canvasRef = useRef(null)
   const imgRef = useRef(null)
@@ -169,7 +170,8 @@ export default function PlantaViewer({
     const yaw = getCameraYaw()
     if (posicao && yaw !== null) {
       const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
-      const heading = -yaw + (headingOffset * Math.PI) / 180 - Math.PI / 2
+      const dirMult = espelharCaminho ? -1 : 1
+      const heading = (yaw * dirMult) + (headingOffset * Math.PI) / 180 - Math.PI / 2
       
       // O raio do cone escala de acordo com o zoom para manter a proporcao com o mapa
       const radius = 60 * Math.max(0.5, Math.min(zoom, 3))
@@ -274,7 +276,7 @@ export default function PlantaViewer({
       ctx.textAlign = 'center'
       ctx.fillText('B', cx, cy + 3)
     }
-  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan])
+  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho])
 
   // Reanima continuamente
   useEffect(() => {

@@ -736,6 +736,7 @@ export default function Visita() {
                 ancora1={ancora1}
                 ancora2={ancora2}
                 visitaSobreposta={visitaSobreposta}
+                espelharCaminho={espelharCaminho}
               />
             </div>
           </div>
