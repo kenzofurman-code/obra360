@@ -3,7 +3,7 @@ import { useRef, useEffect, useCallback, useState } from 'react'
 
 /**
  * Renderiza a planta PNG num canvas preservando a proporcao original do arquivo (sem achatar)
- * e adiciona controles interativos premium de Pan & Zoom (arrastar e roda do mouse).
+ * e adiciona controles interativos de Pan & Zoom, além de pins arrastáveis para ajuste fino.
  */
 export default function PlantaViewer({
   plantaUrl,
@@ -12,6 +12,7 @@ export default function PlantaViewer({
   waypointAtivo,
   onClickCoordenada,
   onClickWaypoint,
+  onUpdateWaypointPosition, // Callback para atualizar a posição de um waypoint arrastado
   player,
   headingOffset = 0,
   modoCalibrarAncoras = null, // null | 'ancora1' | 'ancora2'
@@ -28,10 +29,16 @@ export default function PlantaViewer({
   // Estados de Pan e Zoom
   const [zoom, setZoom] = useState(1.0)
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  
+  // Dragging de mapa
   const isDraggingRef = useRef(false)
   const dragStartRef = useRef({ x: 0, y: 0 })
   const panStartRef = useRef({ x: 0, y: 0 })
   const totalDragDistRef = useRef(0)
+
+  // Dragging de waypoint pin
+  const isDraggingPinRef = useRef(false)
+  const draggedPinRef = useRef(null)
 
   // Carrega imagem principal
   useEffect(() => {
@@ -73,6 +80,22 @@ export default function PlantaViewer({
     return null
   }, [player])
 
+  // Projetar coordenada normalizada [0, 1] no canvas baseado no Pan & Zoom atuais
+  const toCanvasPixels = useCallback((x, y) => {
+    const canvas = canvasRef.current
+    if (!canvas || !imgRef.current) return { cx: 0, cy: 0 }
+    const W = canvas.width
+    const H = canvas.height
+    const scaleToFit = Math.min(W / imgRef.current.width, H / imgRef.current.height)
+    const baseScale = scaleToFit * zoom
+    const startX = W / 2 + pan.x - (imgRef.current.width * baseScale) / 2
+    const startY = H / 2 + pan.y - (imgRef.current.height * baseScale) / 2
+    return {
+      cx: startX + x * imgRef.current.width * baseScale,
+      cy: startY + y * imgRef.current.height * baseScale
+    }
+  }, [zoom, pan])
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -94,21 +117,12 @@ export default function PlantaViewer({
     }
 
     const img = imgRef.current
-    // Calcula escala para encaixar a imagem original inteira no canvas de 900x600 sem distorcer
     const scaleToFit = Math.min(W / img.width, H / img.height)
     const baseScale = scaleToFit * zoom
-
-    // Ponto de inicio do desenho centralizado da imagem no canvas apos translacao (Pan)
     const startX = W / 2 + pan.x - (img.width * baseScale) / 2
     const startY = H / 2 + pan.y - (img.height * baseScale) / 2
 
     ctx.drawImage(img, startX, startY, img.width * baseScale, img.height * baseScale)
-
-    // Funcao interna para projetar coordenada normalizada [0, 1] no canvas baseado no Pan & Zoom
-    const toCanvasPixels = (x, y) => ({
-      cx: startX + x * img.width * baseScale,
-      cy: startY + y * img.height * baseScale
-    })
 
     // 2. Desenha Planta Sobreposta Alinhada Geometricamente (Procrustes 2D)
     if (imgSobrepostaRef.current && visitaSobreposta?.ancora1 && visitaSobreposta?.ancora2 && ancora1 && ancora2) {
@@ -170,10 +184,8 @@ export default function PlantaViewer({
     const yaw = getCameraYaw()
     if (posicao && yaw !== null) {
       const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
-      const dirMult = espelharCaminho ? -1 : 1
-      const heading = (yaw * dirMult) + (headingOffset * Math.PI) / 180 - Math.PI / 2
+      const heading = (yaw * (espelharCaminho ? -1 : 1)) + (headingOffset * Math.PI) / 180 - Math.PI / 2
       
-      // O raio do cone escala de acordo com o zoom para manter a proporcao com o mapa
       const radius = 60 * Math.max(0.5, Math.min(zoom, 3))
       const aperture = (60 * Math.PI) / 180
 
@@ -276,7 +288,7 @@ export default function PlantaViewer({
       ctx.textAlign = 'center'
       ctx.fillText('B', cx, cy + 3)
     }
-  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho])
+  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho, toCanvasPixels])
 
   // Reanima continuamente
   useEffect(() => {
@@ -288,32 +300,94 @@ export default function PlantaViewer({
     return () => cancelAnimationFrame(animFrameRef.current)
   }, [draw])
 
-  // Eventos de Pan & Zoom
+  // Eventos de Pan & Zoom e Dragging de Waypoints
   const handleMouseDown = useCallback((e) => {
-    if (e.button !== 0) return // Apenas botao esquerdo do mouse arrasta
-    isDraggingRef.current = true
-    dragStartRef.current = { x: e.clientX, y: e.clientY }
-    panStartRef.current = { ...pan }
+    if (e.button !== 0) return // Apenas botao esquerdo do mouse
+    
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const rect = canvas.getBoundingClientRect()
+    const mouseX = ((e.clientX - rect.left) / rect.width) * canvas.width
+    const mouseY = ((e.clientY - rect.top) / rect.height) * canvas.height
+
+    // 1. Verifica se clicou muito proximo de um waypoint para arrasta-lo
+    const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+    const PIN_HIT_RADIUS = 15 // tolerancia em pixels
+    let clickedPinIndex = -1
+
+    for (let i = 0; i < sorted.length; i++) {
+      const { cx, cy } = toCanvasPixels(sorted[i].x, sorted[i].y)
+      const dist = Math.sqrt((cx - mouseX) ** 2 + (cy - mouseY) ** 2)
+      if (dist < PIN_HIT_RADIUS) {
+        clickedPinIndex = i
+        break
+      }
+    }
+
+    if (clickedPinIndex !== -1 && onUpdateWaypointPosition) {
+      draggedPinRef.current = clickedPinIndex
+      isDraggingPinRef.current = true
+    } else {
+      // 2. Se nao clicou num pin, arrasta o mapa (Pan)
+      isDraggingRef.current = true
+      dragStartRef.current = { x: e.clientX, y: e.clientY }
+      panStartRef.current = { ...pan }
+    }
     totalDragDistRef.current = 0
-  }, [pan])
+  }, [waypoints, pan, toCanvasPixels, onUpdateWaypointPosition])
 
   const handleMouseMove = useCallback((e) => {
-    if (!isDraggingRef.current) return
-    const dx = e.clientX - dragStartRef.current.x
-    const dy = e.clientY - dragStartRef.current.y
-    totalDragDistRef.current = Math.sqrt(dx * dx + dy * dy)
-    setPan({
-      x: panStartRef.current.x + dx,
-      y: panStartRef.current.y + dy
-    })
-  }, [])
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    // Caso 1: Arrastando um waypoint
+    if (isDraggingPinRef.current && draggedPinRef.current !== null && onUpdateWaypointPosition) {
+      const rect = canvas.getBoundingClientRect()
+      const cx = ((e.clientX - rect.left) / rect.width) * canvas.width
+      const cy = ((e.clientY - rect.top) / rect.height) * canvas.height
+
+      const img = imgRef.current
+      if (img) {
+        const scaleToFit = Math.min(canvas.width / img.width, canvas.height / img.height)
+        const baseScale = scaleToFit * zoom
+        const startX = canvas.width / 2 + pan.x - (img.width * baseScale) / 2
+        const startY = canvas.height / 2 + pan.y - (img.height * baseScale) / 2
+
+        // Calcula a nova coordenada normalizada [0, 1] da planta
+        const px = (cx - startX) / (img.width * baseScale)
+        const py = (cy - startY) / (img.height * baseScale)
+
+        // Limita a movimentacao dentro das bordas da planta baixa [0, 1]
+        const clampedX = Math.max(0, Math.min(px, 1.0))
+        const clampedY = Math.max(0, Math.min(py, 1.0))
+
+        onUpdateWaypointPosition(draggedPinRef.current, { x: clampedX, y: clampedY })
+      }
+      totalDragDistRef.current = 10 // garante que nao contara como clique ao soltar
+      return
+    }
+
+    // Caso 2: Arrastando a camera do visualizador (Pan)
+    if (isDraggingRef.current) {
+      const dx = e.clientX - dragStartRef.current.x
+      const dy = e.clientY - dragStartRef.current.y
+      totalDragDistRef.current = Math.sqrt(dx * dx + dy * dy)
+      setPan({
+        x: panStartRef.current.x + dx,
+        y: panStartRef.current.y + dy
+      })
+    }
+  }, [zoom, pan, onUpdateWaypointPosition])
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
-    // Normaliza a rolagem para torná-la muito mais suave e progressiva (mouses e trackpads)
+    const zoomFactor = 1.15
+    let newZoom = zoom
+    
+    // Normaliza a rolagem para torná-la muito mais suave (mouses e trackpads)
     const delta = -e.deltaY * 0.0010
-    const zoomFactor = Math.exp(delta)
-    const newZoom = Math.max(0.4, Math.min(zoom * zoomFactor, 12.0))
+    const factor = Math.exp(delta)
+    newZoom = Math.max(0.4, Math.min(zoom * factor, 12.0))
 
     const canvas = canvasRef.current
     if (!canvas) return
@@ -337,7 +411,6 @@ export default function PlantaViewer({
     if (!canvas || !imgRef.current) return
     const rect = canvas.getBoundingClientRect()
     
-    // Converte posicao do clique na tela para pixels reais do canvas
     const cx = ((e.clientX - rect.left) / rect.width) * canvas.width
     const cy = ((e.clientY - rect.top) / rect.height) * canvas.height
 
@@ -348,18 +421,14 @@ export default function PlantaViewer({
     const startX = canvas.width / 2 + pan.x - (img.width * baseScale) / 2
     const startY = canvas.height / 2 + pan.y - (img.height * baseScale) / 2
 
-    // Converte pixels reais do canvas de volta para coordenadas normalizadas [0, 1] da imagem
     const x = (cx - startX) / (img.width * baseScale)
     const y = (cy - startY) / (img.height * baseScale)
 
-    // Se esta em modo de calibracao de ancoras, envia o clique
     if (modoCalibrarAncoras) {
       if (onClickCoordenada) onClickCoordenada(x, y)
       return
     }
 
-    // 1. Verifica se clicou proximo de um Pin (Waypoint cadastrado)
-    // O raio de tolerancia do clique se ajusta inversamente ao zoom
     const THRESH = 0.030 / zoom
     const clicked = waypoints.find(
       wp => Math.sqrt((wp.x - x) ** 2 + (wp.y - y) ** 2) < THRESH
@@ -370,7 +439,6 @@ export default function PlantaViewer({
       return
     }
 
-    // 2. Se clicou proximo do trajeto 2D (pula o video tipo Street View)
     if (waypoints.length > 1 && player) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       let minDistance = Infinity
@@ -408,7 +476,6 @@ export default function PlantaViewer({
       }
     }
 
-    // 3. Clique livre: Adicionar novos waypoints
     if (onClickCoordenada) {
       onClickCoordenada(x, y)
     }
@@ -416,7 +483,8 @@ export default function PlantaViewer({
 
   const handleMouseUp = useCallback((e) => {
     isDraggingRef.current = false
-    // Se a distancia arrastada foi minima (menos de 6px), conta como um clique intencional
+    isDraggingPinRef.current = false
+    draggedPinRef.current = null
     if (totalDragDistRef.current < 6) {
       processClick(e)
     }
@@ -444,7 +512,10 @@ export default function PlantaViewer({
         onMouseDown={handleMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={() => { isDraggingRef.current = false }}
+        onMouseLeave={() => { 
+          isDraggingRef.current = false; 
+          isDraggingPinRef.current = false;
+        }}
         onWheel={handleWheel}
         style={{ imageRendering: 'crisp-edges' }}
       />

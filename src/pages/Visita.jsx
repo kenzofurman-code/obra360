@@ -393,6 +393,22 @@ export default function Visita() {
     setWaypoints(sorted)
   }
 
+  const atualizarPosicaoWaypoint = useCallback((index, newPtPlanta) => {
+    // Converte a coordenada movida na planta [0, 1] de volta para o sistema de escala bruto
+    const ptBruto = desalinharPonto(newPtPlanta)
+    setWaypoints(prev => {
+      const next = [...prev].sort((a, b) => a.t - b.t)
+      if (next[index]) {
+        next[index] = {
+          ...next[index],
+          x: ptBruto.x,
+          y: ptBruto.y
+        }
+      }
+      return next
+    })
+  }, [desalinharPonto])
+
   async function salvar() {
     if (id === 'demo') {
       mostrarToast('O modo demo é apenas para testes locais temporários (não salvos no Firebase).', 'erro')
@@ -737,6 +753,7 @@ export default function Visita() {
                 ancora2={ancora2}
                 visitaSobreposta={visitaSobreposta}
                 espelharCaminho={espelharCaminho}
+                onUpdateWaypointPosition={atualizarPosicaoWaypoint}
               />
             </div>
           </div>
