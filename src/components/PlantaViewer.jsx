@@ -308,14 +308,10 @@ export default function PlantaViewer({
 
   const handleWheel = useCallback((e) => {
     e.preventDefault()
-    const zoomFactor = 1.15
-    let newZoom = zoom
-    
-    if (e.deltaY < 0) {
-      newZoom = Math.min(newZoom * zoomFactor, 12.0) // Zoom maximo de 12x
-    } else {
-      newZoom = Math.max(newZoom / zoomFactor, 0.4)  // Zoom minimo de 0.4x
-    }
+    // Normaliza a rolagem para torná-la muito mais suave e progressiva (mouses e trackpads)
+    const delta = -e.deltaY * 0.0010
+    const zoomFactor = Math.exp(delta)
+    const newZoom = Math.max(0.4, Math.min(zoom * zoomFactor, 12.0))
 
     const canvas = canvasRef.current
     if (!canvas) return
