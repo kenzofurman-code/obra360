@@ -1,14 +1,9 @@
 // src/components/PlantaViewer.jsx
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 
 /**
- * Renderiza a planta PNG num canvas e sobrepõe:
- *  - Planta de outro pavimento sobreposta (com transparência e alinhamento geométrico)
- *  - Linha de trajetória entre waypoints
- *  - Cone de visão (FOV) alinhado com a rotação da câmera 360°
- *  - Ponto animado na posição atual (interpolada)
- *  - Pins clicáveis de cada waypoint
- *  - Âncoras de referência (pontos conhecidos)
+ * Renderiza a planta PNG num canvas preservando a proporcao original do arquivo (sem achatar)
+ * e adiciona controles interativos premium de Pan & Zoom (arrastar e roda do mouse).
  */
 export default function PlantaViewer({
   plantaUrl,
@@ -29,6 +24,14 @@ export default function PlantaViewer({
   const imgSobrepostaRef = useRef(null)
   const animFrameRef = useRef(null)
 
+  // Estados de Pan e Zoom
+  const [zoom, setZoom] = useState(1.0)
+  const [pan, setPan] = useState({ x: 0, y: 0 })
+  const isDraggingRef = useRef(false)
+  const dragStartRef = useRef({ x: 0, y: 0 })
+  const panStartRef = useRef({ x: 0, y: 0 })
+  const totalDragDistRef = useRef(0)
+
   // Carrega imagem principal
   useEffect(() => {
     if (!plantaUrl) return
@@ -36,7 +39,9 @@ export default function PlantaViewer({
     img.src = plantaUrl
     img.onload = () => {
       imgRef.current = img
-      draw()
+      // Reseta pan e zoom ao mudar de planta
+      setZoom(1.0)
+      setPan({ x: 0, y: 0 })
     }
   }, [plantaUrl])
 
@@ -52,11 +57,6 @@ export default function PlantaViewer({
       imgSobrepostaRef.current = img
     }
   }, [visitaSobreposta])
-
-  const toCanvas = useCallback((x, y, canvas) => ({
-    cx: x * canvas.width,
-    cy: y * canvas.height,
-  }), [])
 
   const getCameraYaw = useCallback(() => {
     if (!player) return null
@@ -81,29 +81,46 @@ export default function PlantaViewer({
 
     ctx.clearRect(0, 0, W, H)
 
-    // 1. Desenha Planta Principal
-    if (imgRef.current) {
-      ctx.drawImage(imgRef.current, 0, 0, W, H)
-    } else {
+    // 1. Desenha Planta Principal (Preservando Aspect Ratio e aplicando Zoom/Pan)
+    if (!imgRef.current) {
       ctx.fillStyle = '#1a1c20'
       ctx.fillRect(0, 0, W, H)
       ctx.fillStyle = '#3c424d'
       ctx.font = '14px JetBrains Mono'
       ctx.textAlign = 'center'
       ctx.fillText('Carregando planta...', W / 2, H / 2)
+      return
     }
+
+    const img = imgRef.current
+    // Calcula escala para encaixar a imagem original inteira no canvas de 900x600 sem distorcer
+    const scaleToFit = Math.min(W / img.width, H / img.height)
+    const baseScale = scaleToFit * zoom
+
+    // Ponto de inicio do desenho centralizado da imagem no canvas apos translacao (Pan)
+    const startX = W / 2 + pan.x - (img.width * baseScale) / 2
+    const startY = H / 2 + pan.y - (img.height * baseScale) / 2
+
+    ctx.drawImage(img, startX, startY, img.width * baseScale, img.height * baseScale)
+
+    // Funcao interna para projetar coordenada normalizada [0, 1] no canvas baseado no Pan & Zoom
+    const toCanvasPixels = (x, y) => ({
+      cx: startX + x * img.width * baseScale,
+      cy: startY + y * img.height * baseScale
+    })
 
     // 2. Desenha Planta Sobreposta Alinhada Geometricamente (Procrustes 2D)
     if (imgSobrepostaRef.current && visitaSobreposta?.ancora1 && visitaSobreposta?.ancora2 && ancora1 && ancora2) {
-      const ax1 = ancora1.x * W
-      const ay1 = ancora1.y * H
-      const ax2 = ancora2.x * W
-      const ay2 = ancora2.y * H
+      const { cx: ax1, cy: ay1 } = toCanvasPixels(ancora1.x, ancora1.y)
+      const { cx: ax2, cy: ay2 } = toCanvasPixels(ancora2.x, ancora2.y)
 
-      const bx1 = visitaSobreposta.ancora1.x * W
-      const by1 = visitaSobreposta.ancora1.y * H
-      const bx2 = visitaSobreposta.ancora2.x * W
-      const by2 = visitaSobreposta.ancora2.y * H
+      const oW = imgSobrepostaRef.current.width * baseScale
+      const oH = imgSobrepostaRef.current.height * baseScale
+
+      const bx1 = visitaSobreposta.ancora1.x * oW
+      const by1 = visitaSobreposta.ancora1.y * oH
+      const bx2 = visitaSobreposta.ancora2.x * oW
+      const by2 = visitaSobreposta.ancora2.y * oH
 
       const dAx = ax2 - ax1
       const dAy = ay2 - ay1
@@ -120,28 +137,27 @@ export default function PlantaViewer({
         const rotation = angleA - angleB
 
         ctx.save()
-        // Mapeia coordenadas: translação para origem da âncora 1, rotação, escala, translação de volta
         ctx.translate(ax1, ay1)
         ctx.rotate(rotation)
         ctx.scale(scale, scale)
         ctx.translate(-bx1, -by1)
 
         ctx.globalAlpha = 0.40 // 40% de opacidade
-        ctx.drawImage(imgSobrepostaRef.current, 0, 0, W, H)
+        ctx.drawImage(imgSobrepostaRef.current, 0, 0, oW, oH)
         ctx.restore()
       }
     }
 
     const sorted = [...waypoints].sort((a, b) => a.t - b.t)
 
-    // 3. Desenha Linha de trajetória
+    // 3. Desenha Linha de trajetoria
     if (sorted.length > 1) {
       ctx.beginPath()
       ctx.strokeStyle = 'rgba(245, 158, 11, 0.4)'
       ctx.lineWidth = 2.5
       ctx.setLineDash([6, 4])
       sorted.forEach((wp, i) => {
-        const { cx, cy } = toCanvas(wp.x, wp.y, canvas)
+        const { cx, cy } = toCanvasPixels(wp.x, wp.y)
         if (i === 0) ctx.moveTo(cx, cy)
         else ctx.lineTo(cx, cy)
       })
@@ -149,14 +165,15 @@ export default function PlantaViewer({
       ctx.setLineDash([])
     }
 
-    // 4. Desenha Cone de Visão (FOV) Sincronizado
+    // 4. Desenha Cone de Visao (FOV) Sincronizado
     const yaw = getCameraYaw()
     if (posicao && yaw !== null) {
-      const { cx, cy } = toCanvas(posicao.x, posicao.y, canvas)
-      // Ajusta orientação (ângulo canvas = -yaw + offset - 90deg para Norte ser 0)
+      const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
       const heading = -yaw + (headingOffset * Math.PI) / 180 - Math.PI / 2
-      const radius = 60
-      const aperture = (60 * Math.PI) / 180 // abertura de 60 graus
+      
+      // O raio do cone escala de acordo com o zoom para manter a proporcao com o mapa
+      const radius = 60 * Math.max(0.5, Math.min(zoom, 3))
+      const aperture = (60 * Math.PI) / 180
 
       const startAngle = heading - aperture / 2
       const endAngle = heading + aperture / 2
@@ -173,7 +190,6 @@ export default function PlantaViewer({
       ctx.fillStyle = grad
       ctx.fill()
 
-      // Desenha linhas de contorno do cone
       ctx.beginPath()
       ctx.moveTo(cx, cy)
       ctx.lineTo(cx + Math.cos(startAngle) * radius, cy + Math.sin(startAngle) * radius)
@@ -186,7 +202,7 @@ export default function PlantaViewer({
 
     // 5. Desenha Pins dos waypoints
     sorted.forEach((wp) => {
-      const { cx, cy } = toCanvas(wp.x, wp.y, canvas)
+      const { cx, cy } = toCanvasPixels(wp.x, wp.y)
       const isAtivo = waypointAtivo?.t === wp.t
 
       ctx.beginPath()
@@ -207,9 +223,9 @@ export default function PlantaViewer({
       }
     })
 
-    // 6. Desenha Ponto de posição atual
+    // 6. Desenha Ponto de posicao atual (interpolada)
     if (posicao) {
-      const { cx, cy } = toCanvas(posicao.x, posicao.y, canvas)
+      const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
       const t = Date.now() / 600
       const pulse = 11 + Math.sin(t) * 3
 
@@ -229,9 +245,9 @@ export default function PlantaViewer({
       ctx.fill()
     }
 
-    // 7. Desenha Âncoras (Pontos conhecidos de calibração)
+    // 7. Desenha Ancoras
     if (ancora1) {
-      const { cx, cy } = toCanvas(ancora1.x, ancora1.y, canvas)
+      const { cx, cy } = toCanvasPixels(ancora1.x, ancora1.y)
       ctx.beginPath()
       ctx.arc(cx, cy, 7, 0, Math.PI * 2)
       ctx.fillStyle = '#3b82f6'
@@ -245,7 +261,7 @@ export default function PlantaViewer({
       ctx.fillText('A', cx, cy + 3)
     }
     if (ancora2) {
-      const { cx, cy } = toCanvas(ancora2.x, ancora2.y, canvas)
+      const { cx, cy } = toCanvasPixels(ancora2.x, ancora2.y)
       ctx.beginPath()
       ctx.arc(cx, cy, 7, 0, Math.PI * 2)
       ctx.fillStyle = '#ef4444'
@@ -258,9 +274,9 @@ export default function PlantaViewer({
       ctx.textAlign = 'center'
       ctx.fillText('B', cx, cy + 3)
     }
-  }, [waypoints, posicao, waypointAtivo, toCanvas, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta])
+  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan])
 
-  // Reanima continuamente para pulso e rotação de bússola
+  // Reanima continuamente
   useEffect(() => {
     const loop = () => {
       draw()
@@ -270,21 +286,83 @@ export default function PlantaViewer({
     return () => cancelAnimationFrame(animFrameRef.current)
   }, [draw])
 
-  const handleClick = useCallback((e) => {
+  // Eventos de Pan & Zoom
+  const handleMouseDown = useCallback((e) => {
+    if (e.button !== 0) return // Apenas botao esquerdo do mouse arrasta
+    isDraggingRef.current = true
+    dragStartRef.current = { x: e.clientX, y: e.clientY }
+    panStartRef.current = { ...pan }
+    totalDragDistRef.current = 0
+  }, [pan])
+
+  const handleMouseMove = useCallback((e) => {
+    if (!isDraggingRef.current) return
+    const dx = e.clientX - dragStartRef.current.x
+    const dy = e.clientY - dragStartRef.current.y
+    totalDragDistRef.current = Math.sqrt(dx * dx + dy * dy)
+    setPan({
+      x: panStartRef.current.x + dx,
+      y: panStartRef.current.y + dy
+    })
+  }, [])
+
+  const handleWheel = useCallback((e) => {
+    e.preventDefault()
+    const zoomFactor = 1.15
+    let newZoom = zoom
+    
+    if (e.deltaY < 0) {
+      newZoom = Math.min(newZoom * zoomFactor, 12.0) // Zoom maximo de 12x
+    } else {
+      newZoom = Math.max(newZoom / zoomFactor, 0.4)  // Zoom minimo de 0.4x
+    }
+
     const canvas = canvasRef.current
     if (!canvas) return
     const rect = canvas.getBoundingClientRect()
-    const x = (e.clientX - rect.left) / rect.width
-    const y = (e.clientY - rect.top) / rect.height
+    const mouseX = ((e.clientX - rect.left) / rect.width) * canvas.width
+    const mouseY = ((e.clientY - rect.top) / rect.height) * canvas.height
 
-    // Se está calibrando âncoras, chama o clique genérico
+    const dx = mouseX - canvas.width / 2 - pan.x
+    const dy = mouseY - canvas.height / 2 - pan.y
+    const ratio = newZoom / zoom
+
+    setPan({
+      x: mouseX - canvas.width / 2 - dx * ratio,
+      y: mouseY - canvas.height / 2 - dy * ratio
+    })
+    setZoom(newZoom)
+  }, [zoom, pan])
+
+  const processClick = useCallback((e) => {
+    const canvas = canvasRef.current
+    if (!canvas || !imgRef.current) return
+    const rect = canvas.getBoundingClientRect()
+    
+    // Converte posicao do clique na tela para pixels reais do canvas
+    const cx = ((e.clientX - rect.left) / rect.width) * canvas.width
+    const cy = ((e.clientY - rect.top) / rect.height) * canvas.height
+
+    const img = imgRef.current
+    const scaleToFit = Math.min(canvas.width / img.width, canvas.height / img.height)
+    const baseScale = scaleToFit * zoom
+
+    const startX = canvas.width / 2 + pan.x - (img.width * baseScale) / 2
+    const startY = canvas.height / 2 + pan.y - (img.height * baseScale) / 2
+
+    // Converte pixels reais do canvas de volta para coordenadas normalizadas [0, 1] da imagem
+    const x = (cx - startX) / (img.width * baseScale)
+    const y = (cy - startY) / (img.height * baseScale)
+
+    // Se esta em modo de calibracao de ancoras, envia o clique
     if (modoCalibrarAncoras) {
       if (onClickCoordenada) onClickCoordenada(x, y)
       return
     }
 
-    // 1. Primeiro verifica se clicou muito próximo de um pin (waypoint fixo com nota)
-    const THRESH = 0.035
+    // 1. Verifica se clicou proximo de um Pin (Waypoint cadastrado)
+    // O raio de tolerancia do clique se ajusta inversamente ao zoom
+    const THRESH = 0.030 / zoom
     const clicked = waypoints.find(
       wp => Math.sqrt((wp.x - x) ** 2 + (wp.y - y) ** 2) < THRESH
     )
@@ -294,7 +372,7 @@ export default function PlantaViewer({
       return
     }
 
-    // 2. Se não clicou num waypoint fixo, verifica se clicou em algum lugar ao longo do caminho (tipo Street View)
+    // 2. Se clicou proximo do trajeto 2D (pula o video tipo Street View)
     if (waypoints.length > 1 && player) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       let minDistance = Infinity
@@ -310,7 +388,6 @@ export default function PlantaViewer({
 
         if (abLen2 === 0) continue
 
-        // Projeta o clique P(x,y) no segmento de reta AB
         const apX = x - A.x
         const apY = y - A.y
         const r = Math.max(0, Math.min(1, (apX * abX + apY * abY) / abLen2))
@@ -322,40 +399,63 @@ export default function PlantaViewer({
 
         if (dist < minDistance) {
           minDistance = dist
-          // Interpolação linear do tempo do vídeo baseado na posição proporcional no segmento
           bestTime = A.t + r * (B.t - A.t)
         }
       }
 
-      // Limiar de proximidade de clique ao traçado (0.025 = 2.5% do tamanho do canvas)
-      const PATH_THRESH = 0.025
+      const PATH_THRESH = 0.022 / zoom
       if (minDistance < PATH_THRESH && bestTime !== null) {
         player.currentTime(bestTime)
         return
       }
     }
 
-    // 3. Caso contrário, trata como um clique em coordenada livre (para novos waypoints/âncoras)
+    // 3. Clique livre: Adicionar novos waypoints
     if (onClickCoordenada) {
       onClickCoordenada(x, y)
     }
-  }, [waypoints, onClickCoordenada, onClickWaypoint, modoCalibrarAncoras, player])
+  }, [waypoints, onClickCoordenada, onClickWaypoint, modoCalibrarAncoras, player, zoom, pan])
+
+  const handleMouseUp = useCallback((e) => {
+    isDraggingRef.current = false
+    // Se a distancia arrastada foi minima (menos de 6px), conta como um clique intencional
+    if (totalDragDistRef.current < 6) {
+      processClick(e)
+    }
+  }, [processClick])
 
   return (
-    <div className="relative w-full h-full rounded-lg overflow-hidden bg-concreto-900 border border-concreto-700">
+    <div className="relative w-full h-full rounded-lg overflow-hidden bg-concreto-900 border border-concreto-700 select-none">
+      
+      {/* Botao de Centralizacao / Reset de Zoom */}
+      <div className="absolute top-3 left-3 flex gap-1.5 z-10">
+        <button
+          onClick={() => { setZoom(1.0); setPan({ x: 0, y: 0 }) }}
+          className="bg-concreto-950/85 hover:bg-concreto-800 backdrop-blur border border-concreto-700/60 text-aco-200 hover:text-sinal-400 px-2.5 py-1.5 rounded text-[10px] font-mono transition-all active:scale-95 shadow-md"
+          title="Resetar Zoom e Centralizar"
+        >
+          🏠 Centralizar
+        </button>
+      </div>
+
       <canvas
         ref={canvasRef}
         width={900}
         height={600}
-        className="w-full h-full cursor-crosshair"
-        onClick={handleClick}
+        className="w-full h-full cursor-grab active:cursor-grabbing"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={() => { isDraggingRef.current = false }}
+        onWheel={handleWheel}
         style={{ imageRendering: 'crisp-edges' }}
       />
+      
       {/* Legenda */}
       <div className="absolute bottom-3 left-3 flex items-center gap-4 bg-concreto-950/80 backdrop-blur px-3 py-1.5 rounded text-[10px] font-mono text-aco-400">
         <span className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-ok inline-block" />
-          posição atual
+          posicao atual
         </span>
         <span className="flex items-center gap-1.5">
           <span className="w-2 h-2 rounded-full bg-sinal-500 inline-block" />
@@ -364,7 +464,7 @@ export default function PlantaViewer({
         {(ancora1 || ancora2) && (
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
-            âncoras A/B
+            ancoras A/B
           </span>
         )}
       </div>
