@@ -814,7 +814,7 @@ export default function Visita() {
             </div>
 
             {/* Slider de Calibração da Bússola */}
-            <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+            <div className={`bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0 ${ancora1 && ancora2 ? 'opacity-40 pointer-events-none' : ''}`}>
               <div className="flex justify-between items-center text-xs font-mono">
                 <span className="text-aco-300 font-medium text-[11px]">Bússola (Alinhamento Norte)</span>
                 <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{headingOffset}°</span>
@@ -823,19 +823,26 @@ export default function Visita() {
                 type="range"
                 min="-180"
                 max="180"
+                disabled={!!(ancora1 && ancora2)}
                 value={headingOffset}
                 onChange={e => setHeadingOffset(parseInt(e.target.value))}
                 className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
               />
-              <p className="text-[9px] text-aco-400 leading-normal font-mono">
-                Alinha o cone azul de visão no mapa à perspectiva real da câmera.
-              </p>
+              {ancora1 && ancora2 ? (
+                <p className="text-[8px] text-sinal-400 font-mono">
+                  Giro calculado automaticamente pelas Âncoras A e B.
+                </p>
+              ) : (
+                <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                  Alinha o cone azul de visão no mapa à perspectiva real da câmera.
+                </p>
+              )}
             </div>
 
             {/* Slider de Tamanho da Trajetória (apenas se for trajetória importada) */}
             {isImported && (
               <>
-                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                <div className={`bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0 ${ancora1 && ancora2 ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className="flex justify-between items-center text-xs font-mono">
                     <span className="text-aco-300 font-medium text-[11px]">Tamanho do Caminho (Escala)</span>
                     <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{Math.round(pathScale * 100)}%</span>
@@ -845,13 +852,20 @@ export default function Visita() {
                     min="3"
                     max="50"
                     step="1"
+                    disabled={!!(ancora1 && ancora2)}
                     value={Math.round(pathScale * 100)}
                     onChange={e => setPathScale(parseFloat(e.target.value) / 100)}
                     className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
                   />
-                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
-                    Aumenta ou diminui a escala do trajeto para caber na planta baixa.
-                  </p>
+                  {ancora1 && ancora2 ? (
+                    <p className="text-[8px] text-sinal-400 font-mono">
+                      Escala calculada automaticamente pelas Âncoras A e B.
+                    </p>
+                  ) : (
+                    <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                      Aumenta ou diminui a escala do trajeto para caber na planta baixa.
+                    </p>
+                  )}
                 </div>
 
                 {/* Toggle de Espelhamento Horizontal */}
