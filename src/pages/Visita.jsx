@@ -128,6 +128,51 @@ export default function Visita() {
     return pt
   }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho])
 
+  // Realiza o inverso do alinhamento: converte coordenadas [0, 1] da planta para a escala/giro bruto do Python
+  const desalinharPonto = useCallback((pt) => {
+    if (!pt) return null
+    if (!isImported) return pt
+
+    // Inverso por 1 âncora + Escala + Giro da Bússola
+    if (ancora1 && waypoints.length > 0) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      const W1 = sorted[0]
+      const theta = -(headingOffset * Math.PI) / 180 // ângulo inverso
+
+      const dx = pt.x - ancora1.x
+      const dy = pt.y - ancora1.y
+
+      // Aplica a rotação inversa no vetor de diferença
+      const rx = (dx * Math.cos(theta) - dy * Math.sin(theta)) / pathScale
+      const ry = (dx * Math.sin(theta) + dy * Math.cos(theta)) / pathScale
+
+      // Desfaz o espelhamento horizontal se ativado
+      const finalRx = espelharCaminho ? -rx : rx
+
+      return {
+        ...pt,
+        x: W1.x + finalRx,
+        y: W1.y + ry
+      }
+    }
+
+    // Sem âncora (reverso da centralização padrão)
+    if (waypoints.length > 0) {
+      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+      const W1 = sorted[0]
+      const rx = (pt.x - 0.5) / pathScale
+      const ry = (pt.y - 0.5) / pathScale
+      const finalRx = espelharCaminho ? -rx : rx
+      return {
+        ...pt,
+        x: W1.x + finalRx,
+        y: W1.y + ry
+      }
+    }
+
+    return pt
+  }, [waypoints, isImported, ancora1, headingOffset, pathScale, espelharCaminho])
+
   const waypointsAlinhados = useMemo(() => {
     return waypoints.map(alinharPonto)
   }, [waypoints, alinharPonto])
@@ -288,7 +333,16 @@ export default function Visita() {
   }, [modoCalibrarAncoras, modoTrajetoriaRapida, etapaTrajetoriaRapida, duracao, player, trajetoriaRapidaPontoA, modoAdicionar, pendente, pularParaCoordenada])
 
   function confirmarPendente({ label, observacao }) {
-    const novo = { t: Math.round(tempoAtual), x: pendente.x, y: pendente.y, label, observacao }
+    // Converte a coordenada clicada na planta [0, 1] de volta para o sistema de escala bruto
+    const ptBruto = desalinharPonto({ x: pendente.x, y: pendente.y })
+    
+    const novo = { 
+      t: Math.round(tempoAtual), 
+      x: ptBruto.x, 
+      y: ptBruto.y, 
+      label, 
+      observacao 
+    }
     setWaypoints(prev => [...prev, novo])
     setPendente(null)
     setModoAdicionar(false)
