@@ -107,11 +107,16 @@ def extract_trajectory(video_path, sample_rate=0.5):
             current_time = frame_idx / fps
 
             # Se o keyframe atual tiver pouquissimos pontos para rastrear, re-detecta nele
-            if len(kf_pts) < 50:
+            if kf_pts is None or len(kf_pts) < 15:
                 kf_pts = detector.detect(kf_gray)
-                kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
+                if kf_pts:
+                    kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
+                else:
+                    kf_pts = np.array([], dtype=np.float32).reshape(0, 1, 2)
 
-            if len(kf_pts) > 10:
+            tracking_success = False
+
+            if kf_pts is not None and len(kf_pts) >= 8:
                 # Rastreia do Keyframe atual para o Frame Corrente
                 curr_pts, status, err = cv2.calcOpticalFlowPyrLK(kf_gray, gray, kf_pts, None, **lk_params)
 
@@ -119,8 +124,6 @@ def extract_trajectory(video_path, sample_rate=0.5):
                     # Filtra os pontos rastreados com sucesso a partir do Keyframe
                     good_kf = kf_pts[status == 1]
                     good_curr = curr_pts[status == 1]
-
-                    tracking_ratio = len(good_curr) / len(kf_pts) if len(kf_pts) > 0 else 0
 
                     if len(good_curr) > 8:
                         # Estima a Matriz Essencial entre o Keyframe e o Frame Atual
@@ -162,18 +165,35 @@ def extract_trajectory(video_path, sample_rate=0.5):
                                 # Posição atual do frame no mundo 2D
                                 pos_x = kf_pos_x + step * dx
                                 pos_y = kf_pos_y + step * dy
+                                tracking_success = True
 
-                    # SE A TAXA DE RASTREAMENTO CAIR ABAIXO DE 55%:
-                    # Criamos um NOVO Keyframe na posicao atual e re-iniciamos o tracking local.
-                    if tracking_ratio < 0.55 or len(good_curr) < 45:
-                        kf_gray = gray.copy()
-                        kf_pts = detector.detect(kf_gray)
-                        kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
-                        
-                        kf_pos_x = pos_x
-                        kf_pos_y = pos_y
-                        kf_yaw = yaw
-                        print(f"   [Keyframe] Criado no frame {frame_idx} (tempo {current_time:.1f}s)")
+                                # Se a taxa de rastreamento cair abaixo de 55%, cria novo keyframe
+                                tracking_ratio = len(good_curr) / len(kf_pts)
+                                if tracking_ratio < 0.55 or len(good_curr) < 45:
+                                    kf_gray = gray.copy()
+                                    kf_pts = detector.detect(kf_gray)
+                                    if kf_pts:
+                                        kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
+                                    else:
+                                        kf_pts = np.array([], dtype=np.float32).reshape(0, 1, 2)
+                                    
+                                    kf_pos_x = pos_x
+                                    kf_pos_y = pos_y
+                                    kf_yaw = yaw
+                                    print(f"   [Keyframe] Criado no frame {frame_idx} (tempo {current_time:.1f}s)")
+
+            # Se o rastreamento falhou completamente neste frame, cria um novo keyframe no frame atual para recuperar
+            if not tracking_success:
+                kf_gray = gray.copy()
+                kf_pts = detector.detect(kf_gray)
+                if kf_pts:
+                    kf_pts = np.array([p.pt for p in kf_pts], dtype=np.float32).reshape(-1, 1, 2)
+                else:
+                    kf_pts = np.array([], dtype=np.float32).reshape(0, 1, 2)
+                
+                kf_pos_x = pos_x
+                kf_pos_y = pos_y
+                kf_yaw = yaw
 
             # Guarda os pontos da trajetoria no intervalo do sample_rate (ex: a cada 0.5s)
             if current_time - last_sampled_time >= sample_rate:
