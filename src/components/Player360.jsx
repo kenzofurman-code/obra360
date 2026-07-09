@@ -4,6 +4,36 @@ import videojs from 'video.js'
 import * as THREE from 'three'
 
 /**
+ * Interpola posição (x, y) na planta com base no tempo do vídeo.
+ * Executado diretamente a 60fps para evitar o throttle de 4Hz do player.
+ */
+function interpolarPosicao(waypoints, tempoAtual) {
+  if (!waypoints || waypoints.length === 0) return null
+  if (waypoints.length === 1) return { x: waypoints[0].x, y: waypoints[0].y }
+
+  const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+
+  if (tempoAtual <= sorted[0].t) return { x: sorted[0].x, y: sorted[0].y }
+  if (tempoAtual >= sorted[sorted.length - 1].t) {
+    const last = sorted[sorted.length - 1]
+    return { x: last.x, y: last.y }
+  }
+
+  for (let i = 0; i < sorted.length - 1; i++) {
+    const a = sorted[i]
+    const b = sorted[i + 1]
+    if (tempoAtual >= a.t && tempoAtual <= b.t) {
+      const progress = (tempoAtual - a.t) / (b.t - a.t)
+      return {
+        x: a.x + (b.x - a.x) * progress,
+        y: a.y + (b.y - a.y) * progress,
+      }
+    }
+  }
+  return null
+}
+
+/**
  * Player 360° com HLS via Video.js + plugin VR.
  * Adicionalmente projeta a passarela 3D no chão do vídeo como um Ribbon (Fita) estável.
  */
@@ -12,7 +42,7 @@ export default function Player360({
   onReady,
   autoplay = false,
   waypoints = [],
-  posicao = null,
+  posicao = null, // mantido para compatibilidade de prop
   headingOffset = 0,
   lineOpacity = 80,
   lineThickness = 1.0,
@@ -25,9 +55,12 @@ export default function Player360({
   const sceneRef = useRef(null)
   const [playerReady, setPlayerReady] = useState(false)
 
+  // Estado persistente de renderização da posição da câmera (para suavização LERP)
+  const renderPosRef = useRef({ x: 0, y: 0, initialized: false })
+  const lastTimeRef = useRef(0)
+
   // Refs para manter os dados atualizados no loop de 60fps sem recriar o effect
   const waypointsRef = useRef(waypoints)
-  const posicaoRef = useRef(posicao)
   const headingOffsetRef = useRef(headingOffset)
   const lineOpacityRef = useRef(lineOpacity)
   const lineThicknessRef = useRef(lineThickness)
@@ -35,7 +68,6 @@ export default function Player360({
 
   // Sincroniza props com as refs
   useEffect(() => { waypointsRef.current = waypoints }, [waypoints])
-  useEffect(() => { posicaoRef.current = posicao }, [posicao])
   useEffect(() => { headingOffsetRef.current = headingOffset }, [headingOffset])
   useEffect(() => { lineOpacityRef.current = lineOpacity }, [lineOpacity])
   useEffect(() => { lineThicknessRef.current = lineThickness }, [lineThickness])
@@ -97,7 +129,7 @@ export default function Player360({
   }, [hlsUrl, autoplay]) // eslint-disable-line
 
   // Loop de Renderização Estável da Passarela 3D
-  // Roda apenas uma vez quando o player está pronto e limpa apenas ao desmontar
+  // Roda apenas uma vez quando o player está pronto e limpa ao desmontar
   useEffect(() => {
     if (!playerReady) return
     const player = playerRef.current
@@ -112,9 +144,25 @@ export default function Player360({
           sceneRef.current = scene
           
           const currentWaypoints = waypointsRef.current
-          const currentPosicao = posicaoRef.current
+          const t_now = player.currentTime() // Obtém tempo de vídeo não-bloqueado
 
-          if (currentWaypoints && currentWaypoints.length >= 2 && currentPosicao) {
+          // Calcula posição interpolada a 60fps
+          const pos_now = interpolarPosicao(currentWaypoints, t_now)
+
+          if (pos_now) {
+            // Suavização temporal (LERP)
+            // Se for o início do vídeo ou um pulo grande (scrubbing > 1.5s), teleporta a câmera
+            if (!renderPosRef.current.initialized || Math.abs(t_now - lastTimeRef.current) > 1.5) {
+              renderPosRef.current.x = pos_now.x
+              renderPosRef.current.y = pos_now.y
+              renderPosRef.current.initialized = true
+            } else {
+              // Aplica amortecimento de 18% por frame
+              renderPosRef.current.x += (pos_now.x - renderPosRef.current.x) * 0.18
+              renderPosRef.current.y += (pos_now.y - renderPosRef.current.y) * 0.18
+            }
+            lastTimeRef.current = t_now
+
             // Cria o mesh apenas UMA vez, persistindo na cena
             if (!line3DRef.current) {
               const material = new THREE.MeshBasicMaterial({
@@ -135,8 +183,8 @@ export default function Player360({
             // Atualiza opacidade em tempo real
             mesh.material.opacity = lineOpacityRef.current / 100
             
-            const xc = currentPosicao.x
-            const yc = currentPosicao.y
+            const xc = renderPosRef.current.x
+            const yc = renderPosRef.current.y
             
             const alpha = (headingOffsetRef.current * Math.PI) / 180
             const cos = Math.cos(alpha)
@@ -190,7 +238,7 @@ export default function Player360({
               indices.push(v1, v3, v2)
             }
 
-            // 4. Atualiza os buffers de geometria existentes em-lugar (sem destruir o mesh)
+            // 4. Atualiza os buffers de geometria existentes em-lugar
             const geometry = mesh.geometry
             geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
             geometry.setIndex(indices)
