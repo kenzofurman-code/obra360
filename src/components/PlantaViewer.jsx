@@ -73,10 +73,13 @@ export default function PlantaViewer({
       const vr = player.vr?.()
       const camera = vr?.camera || vr?.camera_
       if (camera) {
-        // Converte o quaternion para a ordem YXZ para obter o yaw em 360 graus [-pi, pi]
-        // evitando o colapso na faixa [-pi/2, pi/2] da ordem padrao XYZ
-        const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
-        return euler.y
+        // Obtém o vetor unitário absoluto para onde a câmera está apontando no mundo 3D
+        const dir = new THREE.Vector3()
+        camera.getWorldDirection(dir)
+        
+        // Em Three.js, Y é para cima, X é para a direita e Z é para trás (vetor de visão padrão é -Z).
+        // Calculamos o yaw no plano XZ em relação ao eixo Z negativo (frente)
+        return Math.atan2(dir.x, -dir.z)
       }
     } catch (e) {
       // Falha silenciosa caso o plugin ainda não esteja inicializado
