@@ -3,8 +3,9 @@ import { useRef, useEffect, useCallback, useState } from 'react'
 import * as THREE from 'three'
 import * as pdfjs from 'pdfjs-dist'
 
-// Configura o worker do PDFJS via CDNJS para evitar erros de Vite bundling
-pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
+// Configura o worker de forma local compatível com Vite
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.mjs?worker'
+pdfjs.GlobalWorkerOptions.workerPort = new pdfjsWorker()
 
 /**
  * Renderiza a planta PNG num canvas preservando a proporcao original do arquivo (sem achatar)
