@@ -191,7 +191,16 @@ export default function PlantaViewer({
     const yaw = getCameraYaw()
     if (posicao && yaw !== null) {
       const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
-      const heading = (yaw * (espelharCaminho ? -1 : 1)) + (headingOffset * Math.PI) / 180 + Math.PI / 2
+      // Projeta o vetor de visão da câmera usando a mesma transformação da trajetória.
+      // Isso garante sincronismo absoluto de orientação e sentido (esquerda/direita) em qualquer bússola.
+      const theta = ((headingOffset + 180) * Math.PI) / 180
+      const dx = espelharCaminho ? -Math.sin(yaw) : Math.sin(yaw)
+      const dy = -Math.cos(yaw)
+      
+      const rx = dx * Math.cos(theta) - dy * Math.sin(theta)
+      const ry = dx * Math.sin(theta) + dy * Math.cos(theta)
+      
+      const heading = Math.atan2(ry, rx)
       
       const radius = 60 * Math.max(0.5, Math.min(zoom, 3))
       const aperture = (60 * Math.PI) / 180
