@@ -57,7 +57,7 @@ export default function PlantaViewer({
     if (isPdf) {
       const renderPdf = async () => {
         try {
-          const loadingTask = pdfjs.getDocument(url);
+          const loadingTask = pdfjs.getDocument({ url });
           const pdf = await loadingTask.promise;
           const page = await pdf.getPage(1);
           
