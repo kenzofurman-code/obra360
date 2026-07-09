@@ -191,7 +191,7 @@ export default function PlantaViewer({
     const yaw = getCameraYaw()
     if (posicao && yaw !== null) {
       const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
-      const heading = (yaw * (espelharCaminho ? -1 : 1)) + (headingOffset * Math.PI) / 180 + Math.PI / 2
+      const heading = (yaw * (espelharCaminho ? 1 : -1)) + (headingOffset * Math.PI) / 180 + Math.PI / 2
       
       const radius = 60 * Math.max(0.5, Math.min(zoom, 3))
       const aperture = (60 * Math.PI) / 180
