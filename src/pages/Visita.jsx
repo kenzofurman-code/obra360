@@ -35,7 +35,7 @@ export default function Visita() {
   const [ancora2, setAncora2] = useState(null)
   const [isImported, setIsImported] = useState(false)
   const [pathScale, setPathScale] = useState(0.50)
-  const [espelharCaminho, setEspelharCaminho] = useState(false)
+  const [espelharCaminho, setEspelharCaminho] = useState(true)
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
   const [listaVisitas, setListaVisitas] = useState([])
@@ -269,7 +269,7 @@ export default function Visita() {
       setAncora2(v.ancora2 || null)
       setIsImported(v.is_imported || false)
       setPathScale(v.path_scale ?? 0.50)
-      setEspelharCaminho(v.espelhar_caminho || false)
+      setEspelharCaminho(v.espelhar_caminho ?? true)
     })
   }, [id, navigate])
 
@@ -869,8 +869,8 @@ export default function Visita() {
                   </div>
                   <input
                     type="range"
-                    min="3"
-                    max="50"
+                    min="1"
+                    max="100"
                     step="1"
                     disabled={!!(ancora1 && ancora2)}
                     value={Math.round(pathScale * 100)}
