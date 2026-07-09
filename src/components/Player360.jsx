@@ -200,8 +200,12 @@ export default function Player360({
               const rawDx = (wp.x - xc) * 22
               const dx = espelharCaminhoRef.current ? -rawDx : rawDx
               const dy = (wp.y - yc) * 22
-              const rx = dx * cos - dy * sin
-              const rz = dx * sin + dy * cos
+              
+              // No espaço 3D do vídeo, X é horizontal (rx = dx)
+              // E a câmera olha para a direção Z negativa. Logo, andar para frente (+dy)
+              // deve nos mover para frente no espaço 3D (Z negativo: rz = -dy)
+              const rx = dx
+              const rz = -dy
               const ry = -2.1 // Altura fisica fixa do chao
               return new THREE.Vector3(rx, ry, rz)
             })

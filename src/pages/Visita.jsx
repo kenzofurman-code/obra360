@@ -75,10 +75,9 @@ export default function Visita() {
         const angleA = Math.atan2(dAy, dAx)
         const rotation = angleA - angleW
 
-        // Aplica espelhamento horizontal se ativado
         const rawDx = pt.x - W1.x
         const dx = espelharCaminho ? -rawDx : rawDx
-        const dy = pt.y - W1.y
+        const dy = -(pt.y - W1.y) // Inverte Y para subir na planta ao andar para frente
 
         const rx = (dx * Math.cos(rotation) - dy * Math.sin(rotation)) * scale
         const ry = (dx * Math.sin(rotation) + dy * Math.cos(rotation)) * scale
@@ -99,7 +98,7 @@ export default function Visita() {
 
       const rawDx = pt.x - W1.x
       const dx = espelharCaminho ? -rawDx : rawDx
-      const dy = pt.y - W1.y
+      const dy = -(pt.y - W1.y) // Inverte Y para subir na planta ao andar para frente
 
       const rx = (dx * Math.cos(theta) - dy * Math.sin(theta)) * pathScale
       const ry = (dx * Math.sin(theta) + dy * Math.cos(theta)) * pathScale
@@ -117,7 +116,7 @@ export default function Visita() {
       const W1 = sorted[0]
       const rawDx = pt.x - W1.x
       const dx = espelharCaminho ? -rawDx : rawDx
-      const dy = pt.y - W1.y
+      const dy = -(pt.y - W1.y) // Inverte Y para subir na planta ao andar para frente
       return {
         ...pt,
         x: 0.5 + dx * pathScale,
@@ -163,11 +162,12 @@ export default function Visita() {
 
         // Desfaz o espelhamento horizontal se ativado
         const finalRx = espelharCaminho ? -rx : rx
+        const finalRy = -ry // Desfaz a inversão do eixo Y
 
         return {
           ...pt,
           x: W1.x + finalRx,
-          y: W1.y + ry
+          y: W1.y + finalRy
         }
       }
     }
@@ -187,11 +187,12 @@ export default function Visita() {
 
       // Desfaz o espelhamento horizontal se ativado
       const finalRx = espelharCaminho ? -rx : rx
+      const finalRy = -ry // Desfaz a inversão do eixo Y
 
       return {
         ...pt,
         x: W1.x + finalRx,
-        y: W1.y + ry
+        y: W1.y + finalRy
       }
     }
 
@@ -202,10 +203,11 @@ export default function Visita() {
       const rx = (pt.x - 0.5) / pathScale
       const ry = (pt.y - 0.5) / pathScale
       const finalRx = espelharCaminho ? -rx : rx
+      const finalRy = -ry // Desfaz a inversão do eixo Y
       return {
         ...pt,
         x: W1.x + finalRx,
-        y: W1.y + ry
+        y: W1.y + finalRy
       }
     }
 
