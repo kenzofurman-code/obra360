@@ -343,7 +343,7 @@ export default function Upload() {
           )}
 
           {/* Planta Baixa: Upload ou link manual */}
-          <Field label="Planta Baixa (Imagem PNG/JPG)" hint="Selecione a planta baixa para mapear os waypoints">
+          <Field label="Planta Baixa (PDF ou Imagem)" hint="Selecione a planta baixa (PDF vetorizado ou imagem PNG/JPG) para mapear os waypoints">
             {plantaFile ? (
               <div className="flex items-center justify-between bg-concreto-800 border border-concreto-700 p-2.5 rounded-lg text-xs">
                 <span className="font-mono text-aco-200 truncate">{plantaFile.name}</span>
@@ -359,14 +359,14 @@ export default function Upload() {
               <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded-lg p-3 bg-concreto-800/10 text-center cursor-pointer transition-all">
                 <input
                   type="file"
-                  accept="image/png, image/jpeg, image/jpg"
+                  accept="application/pdf, image/png, image/jpeg, image/jpg"
                   onChange={e => {
                     const file = e.target.files[0]
                     if (file) setPlantaFile(file)
                   }}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
-                <span className="text-xs text-aco-300">Escolher imagem local da planta baixa</span>
+                <span className="text-xs text-aco-300">Escolher arquivo PDF ou imagem da planta baixa</span>
               </div>
             )}
             
@@ -375,7 +375,7 @@ export default function Upload() {
                 value={form.planta_url}
                 onChange={e => set('planta_url', e.target.value)}
                 disabled={uploading || salvando}
-                placeholder="Ou cole uma URL ex: https://pub-xxx.r2.dev/planta.png"
+                placeholder="Ou cole uma URL ex: https://pub-xxx.r2.dev/planta.pdf"
                 className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2 text-xs text-aco-200 mt-2 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
               />
             )}

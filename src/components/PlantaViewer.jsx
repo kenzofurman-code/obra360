@@ -1,6 +1,10 @@
 // src/components/PlantaViewer.jsx
 import { useRef, useEffect, useCallback, useState } from 'react'
 import * as THREE from 'three'
+import * as pdfjs from 'pdfjs-dist'
+
+// Configura o worker do PDFJS via CDNJS para evitar erros de Vite bundling
+pdfjs.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjs.version}/pdf.worker.min.js`;
 
 /**
  * Renderiza a planta PNG num canvas preservando a proporcao original do arquivo (sem achatar)
@@ -41,18 +45,64 @@ export default function PlantaViewer({
   const isDraggingPinRef = useRef(false)
   const draggedPinRef = useRef(null)
 
+  // Função auxiliar para carregar imagem (suporta PDF e Imagem convencional)
+  const carregarImagemPlanta = useCallback((url, callback) => {
+    if (!url) return;
+    
+    const isPdf = url.toLowerCase().includes('.pdf') || url.startsWith('data:application/pdf');
+    
+    if (isPdf) {
+      const renderPdf = async () => {
+        try {
+          const loadingTask = pdfjs.getDocument(url);
+          const pdf = await loadingTask.promise;
+          const page = await pdf.getPage(1);
+          
+          // Renderiza a prancha a 2.0x de escala para manter ótima definição de zoom
+          const viewport = page.getViewport({ scale: 2.0 });
+          
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          
+          const renderContext = {
+            canvasContext: context,
+            viewport: viewport
+          };
+          
+          await page.render(renderContext).promise;
+          const dataUrl = canvas.toDataURL('image/png');
+          
+          const img = new Image();
+          img.src = dataUrl;
+          img.onload = () => callback(img);
+        } catch (error) {
+          console.error("Erro ao carregar/renderizar planta PDF:", error);
+          // Fallback para tentar carregar como imagem normal se falhar
+          const img = new Image();
+          img.src = url;
+          img.onload = () => callback(img);
+        }
+      };
+      renderPdf();
+    } else {
+      const img = new Image();
+      img.src = url;
+      img.onload = () => callback(img);
+    }
+  }, []);
+
   // Carrega imagem principal
   useEffect(() => {
     if (!plantaUrl) return
-    const img = new Image()
-    img.src = plantaUrl
-    img.onload = () => {
+    carregarImagemPlanta(plantaUrl, (img) => {
       imgRef.current = img
       // Reseta pan e zoom ao mudar de planta
       setZoom(1.0)
       setPan({ x: 0, y: 0 })
-    }
-  }, [plantaUrl])
+    })
+  }, [plantaUrl, carregarImagemPlanta])
 
   // Carrega imagem de sobreposição
   useEffect(() => {
@@ -60,12 +110,10 @@ export default function PlantaViewer({
       imgSobrepostaRef.current = null
       return
     }
-    const img = new Image()
-    img.src = visitaSobreposta.planta_url
-    img.onload = () => {
+    carregarImagemPlanta(visitaSobreposta.planta_url, (img) => {
       imgSobrepostaRef.current = img
-    }
-  }, [visitaSobreposta])
+    })
+  }, [visitaSobreposta, carregarImagemPlanta])
 
   const getCameraYaw = useCallback(() => {
     if (!player) return null
