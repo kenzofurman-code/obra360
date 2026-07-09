@@ -34,7 +34,7 @@ export default function Visita() {
   const [ancora1, setAncora1] = useState(null)
   const [ancora2, setAncora2] = useState(null)
   const [isImported, setIsImported] = useState(false)
-  const [pathScale, setPathScale] = useState(0.15)
+  const [pathScale, setPathScale] = useState(0.50)
   const [espelharCaminho, setEspelharCaminho] = useState(false)
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
@@ -94,7 +94,7 @@ export default function Visita() {
     if (ancora1 && waypoints.length > 0) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
-      const theta = (headingOffset * Math.PI) / 180
+      const theta = ((headingOffset + 180) * Math.PI) / 180
 
       const rawDx = pt.x - W1.x
       const dx = espelharCaminho ? -rawDx : rawDx
@@ -176,7 +176,7 @@ export default function Visita() {
     if (ancora1 && waypoints.length > 0) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
-      const theta = -(headingOffset * Math.PI) / 180 // ângulo inverso
+      const theta = -((headingOffset + 180) * Math.PI) / 180 // ângulo inverso
 
       const dx = pt.x - ancora1.x
       const dy = pt.y - ancora1.y
@@ -268,7 +268,7 @@ export default function Visita() {
       setAncora1(v.ancora1 || null)
       setAncora2(v.ancora2 || null)
       setIsImported(v.is_imported || false)
-      setPathScale(v.path_scale ?? 0.15)
+      setPathScale(v.path_scale ?? 0.50)
       setEspelharCaminho(v.espelhar_caminho || false)
     })
   }, [id, navigate])
