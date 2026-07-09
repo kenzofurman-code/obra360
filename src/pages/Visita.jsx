@@ -809,11 +809,11 @@ export default function Visita() {
               </div>
 
               <div>
-                <span className="text-[11px] font-semibold text-aco-300 font-mono block mb-1">Planta Baixa Local (Teste)</span>
+                <span className="text-[11px] font-semibold text-aco-300 font-mono block mb-1">Planta Baixa Local (PDF ou Imagem)</span>
                 <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded bg-concreto-800/20 p-2 text-center cursor-pointer transition-all">
                   <input
                     type="file"
-                    accept="image/*"
+                    accept="application/pdf, image/*"
                     onChange={e => {
                       const file = e.target.files[0]
                       if (file) {
@@ -824,7 +824,7 @@ export default function Visita() {
                     }}
                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                   />
-                  <span className="text-[10px] text-aco-400 font-mono">Selecionar Planta Local</span>
+                  <span className="text-[10px] text-aco-400 font-mono">Selecionar Planta Local (PDF ou Imagem)</span>
                 </div>
               </div>
               

@@ -57,7 +57,14 @@ export default function PlantaViewer({
     if (isPdf) {
       const renderPdf = async () => {
         try {
-          const loadingTask = pdfjs.getDocument({ url });
+          // Busca o PDF como ArrayBuffer primeiro (contorna CORS e auth do Firebase)
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`Falha ao buscar PDF (HTTP ${response.status} ${response.statusText})`);
+          }
+          const arrayBuffer = await response.arrayBuffer();
+
+          const loadingTask = pdfjs.getDocument({ data: arrayBuffer });
           const pdf = await loadingTask.promise;
           const page = await pdf.getPage(1);
           
