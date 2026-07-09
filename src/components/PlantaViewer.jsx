@@ -1,5 +1,6 @@
 // src/components/PlantaViewer.jsx
 import { useRef, useEffect, useCallback, useState } from 'react'
+import * as THREE from 'three'
 
 /**
  * Renderiza a planta PNG num canvas preservando a proporcao original do arquivo (sem achatar)
@@ -72,7 +73,10 @@ export default function PlantaViewer({
       const vr = player.vr?.()
       const camera = vr?.camera || vr?.camera_
       if (camera) {
-        return camera.rotation.y
+        // Converte o quaternion para a ordem YXZ para obter o yaw em 360 graus [-pi, pi]
+        // evitando o colapso na faixa [-pi/2, pi/2] da ordem padrao XYZ
+        const euler = new THREE.Euler().setFromQuaternion(camera.quaternion, 'YXZ')
+        return euler.y
       }
     } catch (e) {
       // Falha silenciosa caso o plugin ainda não esteja inicializado
