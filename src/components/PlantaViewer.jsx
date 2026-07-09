@@ -35,6 +35,7 @@ export default function PlantaViewer({
   // Estados de Pan e Zoom
   const [zoom, setZoom] = useState(1.0)
   const [pan, setPan] = useState({ x: 0, y: 0 })
+  const [errorMsg, setErrorMsg] = useState(null)
   
   // Dragging de mapa
   const isDraggingRef = useRef(false)
@@ -49,6 +50,7 @@ export default function PlantaViewer({
   // Função auxiliar para carregar imagem (suporta PDF e Imagem convencional)
   const carregarImagemPlanta = useCallback((url, callback) => {
     if (!url) return;
+    setErrorMsg(null);
     
     const isPdf = url.toLowerCase().includes('.pdf') || url.startsWith('data:application/pdf');
     
@@ -78,12 +80,10 @@ export default function PlantaViewer({
           const img = new Image();
           img.src = dataUrl;
           img.onload = () => callback(img);
+          img.onerror = () => setErrorMsg("Falha ao instanciar imagem do PDF renderizado.");
         } catch (error) {
           console.error("Erro ao carregar/renderizar planta PDF:", error);
-          // Fallback para tentar carregar como imagem normal se falhar
-          const img = new Image();
-          img.src = url;
-          img.onload = () => callback(img);
+          setErrorMsg(error.message || error.toString());
         }
       };
       renderPdf();
@@ -91,6 +91,7 @@ export default function PlantaViewer({
       const img = new Image();
       img.src = url;
       img.onload = () => callback(img);
+      img.onerror = () => setErrorMsg("Erro ao carregar arquivo de imagem.");
     }
   }, []);
 
@@ -165,10 +166,15 @@ export default function PlantaViewer({
     if (!imgRef.current) {
       ctx.fillStyle = '#1a1c20'
       ctx.fillRect(0, 0, W, H)
-      ctx.fillStyle = '#3c424d'
-      ctx.font = '14px JetBrains Mono'
+      ctx.fillStyle = errorMsg ? '#ef4444' : '#3c424d'
+      ctx.font = '13px JetBrains Mono'
       ctx.textAlign = 'center'
-      ctx.fillText('Carregando planta...', W / 2, H / 2)
+      if (errorMsg) {
+        ctx.fillText('Erro ao carregar PDF:', W / 2, H / 2 - 10)
+        ctx.fillText(errorMsg.slice(0, 80), W / 2, H / 2 + 15)
+      } else {
+        ctx.fillText('Carregando planta...', W / 2, H / 2)
+      }
       return
     }
 
