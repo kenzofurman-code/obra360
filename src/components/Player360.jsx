@@ -186,9 +186,13 @@ export default function Player360({
             const xc = renderPosRef.current.x
             const yc = renderPosRef.current.y
             
-            const alpha = (headingOffsetRef.current * Math.PI) / 180
-            const cos = Math.cos(alpha)
-            const sin = Math.sin(alpha)
+            // A passarela 3D é desenhada diretamente no espaço de coordenadas do vídeo (video space).
+            // Como a odometria visual (Python) foi gerada a partir deste exato vídeo, o alinhamento 3D
+            // entre o trajeto e o vídeo é nativo (ângulo 0). A bússola (headingOffset) serve apenas
+            // para orientar o trajeto 2D na planta baixa física.
+            const alpha = 0.0
+            const cos = 1.0
+            const sin = 0.0
 
             // 1. Gera os pontos centrais 3D
             const sorted = [...currentWaypoints].sort((a, b) => a.t - b.t)
