@@ -5,7 +5,7 @@ import * as THREE from 'three'
 
 /**
  * Player 360° com HLS via Video.js + plugin VR.
- * Adicionalmente projeta a passarela 3D no chão do vídeo como um Ribbon (Fita) ajustável.
+ * Adicionalmente projeta a passarela 3D no chão do vídeo como um Ribbon (Fita) estável.
  */
 export default function Player360({
   hlsUrl,
@@ -25,13 +25,28 @@ export default function Player360({
   const sceneRef = useRef(null)
   const [playerReady, setPlayerReady] = useState(false)
 
+  // Refs para manter os dados atualizados no loop de 60fps sem recriar o effect
+  const waypointsRef = useRef(waypoints)
+  const posicaoRef = useRef(posicao)
+  const headingOffsetRef = useRef(headingOffset)
+  const lineOpacityRef = useRef(lineOpacity)
+  const lineThicknessRef = useRef(lineThickness)
+  const espelharCaminhoRef = useRef(espelharCaminho)
+
+  // Sincroniza props com as refs
+  useEffect(() => { waypointsRef.current = waypoints }, [waypoints])
+  useEffect(() => { posicaoRef.current = posicao }, [posicao])
+  useEffect(() => { headingOffsetRef.current = headingOffset }, [headingOffset])
+  useEffect(() => { lineOpacityRef.current = lineOpacity }, [lineOpacity])
+  useEffect(() => { lineThicknessRef.current = lineThickness }, [lineThickness])
+  useEffect(() => { espelharCaminhoRef.current = espelharCaminho }, [espelharCaminho])
+
   // Inicialização do Player
   useEffect(() => {
     let active = true
     let player = null
 
     const initPlayer = async () => {
-      // Garante que o videojs global exista antes de carregar o plugin
       window.videojs = videojs
       await import('videojs-vr')
 
@@ -55,10 +70,9 @@ export default function Player360({
         sources: [{ src: hlsUrl, type }],
       })
 
-      // Ativa o plugin VR (equiretangular 360°)
       player.vr({
         projection: '360',
-        motionControls: false, // desativa giroscópio no desktop
+        motionControls: false,
         debug: false,
       })
 
@@ -82,8 +96,10 @@ export default function Player360({
     }
   }, [hlsUrl, autoplay]) // eslint-disable-line
 
-  // Loop de Renderização / Atualização da Passarela 3D no chão do vídeo
+  // Loop de Renderização Estável da Passarela 3D
+  // Roda apenas uma vez quando o player está pronto e limpa apenas ao desmontar
   useEffect(() => {
+    if (!playerReady) return
     const player = playerRef.current
     if (!player) return
 
@@ -92,52 +108,55 @@ export default function Player360({
         const vr = player.vr?.()
         const scene = vr?.scene || vr?.scene_
         
-        if (scene && waypoints && waypoints.length >= 2 && posicao) {
+        if (scene) {
           sceneRef.current = scene
+          
+          const currentWaypoints = waypointsRef.current
+          const currentPosicao = posicaoRef.current
 
-          // Se o Ribbon Mesh (fita) ainda não existe na cena, cria
-          if (!line3DRef.current) {
-            const material = new THREE.MeshBasicMaterial({
-              color: 0x3b82f6, // azul elétrico/neon
-              transparent: true,
-              opacity: lineOpacity / 100,
-              side: THREE.DoubleSide,
-              depthWrite: false, // evita piscar ou sumir sob o fundo do vídeo
-            })
-            const geometry = new THREE.BufferGeometry()
-            const mesh = new THREE.Mesh(geometry, material)
-            scene.add(mesh)
-            line3DRef.current = mesh
-          }
+          if (currentWaypoints && currentWaypoints.length >= 2 && currentPosicao) {
+            // Cria o mesh apenas UMA vez, persistindo na cena
+            if (!line3DRef.current) {
+              const material = new THREE.MeshBasicMaterial({
+                color: 0x3b82f6, // azul elétrico/neon
+                transparent: true,
+                opacity: lineOpacityRef.current / 100,
+                side: THREE.DoubleSide,
+                depthWrite: false, // evita piscar sob texturas do chao
+              })
+              const geometry = new THREE.BufferGeometry()
+              const mesh = new THREE.Mesh(geometry, material)
+              scene.add(mesh)
+              line3DRef.current = mesh
+            }
 
-          // Atualiza as propriedades e os vértices do Ribbon
-          if (line3DRef.current) {
-            // Atualiza opacidade do material
-            line3DRef.current.material.opacity = lineOpacity / 100;
+            const mesh = line3DRef.current
             
-            const xc = posicao.x
-            const yc = posicao.y
+            // Atualiza opacidade em tempo real
+            mesh.material.opacity = lineOpacityRef.current / 100
             
-            // Converte o Azimute (Norte) de graus para radianos
-            const alpha = (headingOffset * Math.PI) / 180
+            const xc = currentPosicao.x
+            const yc = currentPosicao.y
+            
+            const alpha = (headingOffsetRef.current * Math.PI) / 180
             const cos = Math.cos(alpha)
             const sin = Math.sin(alpha)
 
-            // 1. Gera os pontos centrais tridimensionais do caminho no chão
-            const sorted = [...waypoints].sort((a, b) => a.t - b.t)
+            // 1. Gera os pontos centrais 3D
+            const sorted = [...currentWaypoints].sort((a, b) => a.t - b.t)
             const pathPoints = sorted.map(wp => {
               const rawDx = (wp.x - xc) * 22
-              const dx = espelharCaminho ? -rawDx : rawDx
+              const dx = espelharCaminhoRef.current ? -rawDx : rawDx
               const dy = (wp.y - yc) * 22
               const rx = dx * cos - dy * sin
               const rz = dx * sin + dy * cos
-              const ry = -2.1 // Altura física aproximada do chão (-2.1 unidades abaixo da lente)
+              const ry = -2.1 // Altura fisica fixa do chao
               return new THREE.Vector3(rx, ry, rz)
             })
 
-            // 2. Calcula as bordas esquerda/direita da fita para gerar a espessura
+            // 2. Calcula as bordas para a espessura da fita
             const vertices = []
-            const halfWidth = 0.18 * lineThickness // largura base de 0.18 unidades escalada
+            const halfWidth = 0.18 * lineThicknessRef.current
 
             for (let i = 0; i < pathPoints.length; i++) {
               const p = pathPoints[i]
@@ -148,7 +167,6 @@ export default function Player360({
                 dir.subVectors(p, pathPoints[i - 1])
               }
 
-              // Vetor perpendicular no plano XZ
               const len = Math.sqrt(dir.x * dir.x + dir.z * dir.z)
               let px = 0, pz = 1
               if (len > 0) {
@@ -156,13 +174,11 @@ export default function Player360({
                 pz = dir.x / len
               }
 
-              // Vértice Esquerdo (A)
               vertices.push(p.x - px * halfWidth, p.y, p.z - pz * halfWidth)
-              // Vértice Direito (B)
               vertices.push(p.x + px * halfWidth, p.y, p.z + pz * halfWidth)
             }
 
-            // 3. Monta a lista de triângulos para formar as faces
+            // 3. Monta os indices de triangulo
             const indices = []
             for (let i = 0; i < pathPoints.length - 1; i++) {
               const v0 = 2 * i
@@ -170,13 +186,12 @@ export default function Player360({
               const v2 = 2 * (i + 1)
               const v3 = 2 * (i + 1) + 1
 
-              // Triângulo 1 (v0 -> v1 -> v2)
               indices.push(v0, v1, v2)
-              // Triângulo 2 (v1 -> v3 -> v2)
               indices.push(v1, v3, v2)
             }
 
-            const geometry = line3DRef.current.geometry
+            // 4. Atualiza os buffers de geometria existentes em-lugar (sem destruir o mesh)
+            const geometry = mesh.geometry
             geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3))
             geometry.setIndex(indices)
             geometry.computeVertexNormals()
@@ -185,7 +200,7 @@ export default function Player360({
           }
         }
       } catch (e) {
-        // Ignora erros temporários durante o carregamento inicial
+        // Ignora erros de inicializacao
       }
 
       animFrameRef.current = requestAnimationFrame(update3DLine)
@@ -200,7 +215,7 @@ export default function Player360({
         line3DRef.current = null
       }
     }
-  }, [playerReady, waypoints, posicao, headingOffset, lineOpacity, lineThickness, espelharCaminho])
+  }, [playerReady]) // Roda apenas uma vez ao iniciar e limpa ao desmontar
 
   if (!hlsUrl) {
     return (
