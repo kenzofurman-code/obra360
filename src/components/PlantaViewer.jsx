@@ -249,45 +249,63 @@ export default function PlantaViewer({
       ctx.setLineDash([])
     }
 
-    // 4. Desenha Cone de Visao (FOV) Sincronizado
+    // 4. Desenha Cone de Visao (FOV) por rotação vetorial direta
+    // Não usa Math.atan2 nem ctx.arc, evitando inversão de esquerda/direita.
+    // O triângulo é construído rotacionando ±30° o vetor de visão (rx, ry).
     const yaw = getCameraYaw()
     if (posicao && yaw !== null) {
       const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
-      // Projeta o vetor de visão da câmera usando a mesma transformação da trajetória.
-      // Isso garante sincronismo absoluto de orientação e sentido (esquerda/direita) em qualquer bússola.
+
+      // Projeta o vetor de visão usando a mesma transformação da trajetória
       const theta = ((headingOffset + 180) * Math.PI) / 180
       const dx = espelharCaminho ? -Math.sin(yaw) : Math.sin(yaw)
       const dy = -Math.cos(yaw)
-      
+
+      // Vetor de visão rotacionado pela bússola (no espaço do canvas)
       const rx = dx * Math.cos(theta) - dy * Math.sin(theta)
       const ry = dx * Math.sin(theta) + dy * Math.cos(theta)
-      
-      const heading = Math.atan2(ry, rx)
-      
+
+      // Raio e abertura do cone (60° total = ±30°)
       const radius = 60 * Math.max(0.5, Math.min(zoom, 3))
-      const aperture = (60 * Math.PI) / 180
+      const halfAngle = (30 * Math.PI) / 180
+      const cosH = Math.cos(halfAngle)
+      const sinH = Math.sin(halfAngle)
 
-      const startAngle = heading - aperture / 2
-      const endAngle = heading + aperture / 2
+      // Rotaciona (rx, ry) por -30° → borda esquerda
+      const lx = rx * cosH + ry * sinH
+      const ly = -rx * sinH + ry * cosH
 
-      ctx.beginPath()
-      ctx.moveTo(cx, cy)
-      ctx.arc(cx, cy, radius, startAngle, endAngle)
-      ctx.closePath()
+      // Rotaciona (rx, ry) por +30° → borda direita
+      const rrx = rx * cosH - ry * sinH
+      const rry = rx * sinH + ry * cosH
 
+      // Pontos finais das bordas do triângulo no canvas
+      const tipLx = cx + lx * radius
+      const tipLy = cy + ly * radius
+      const tipRx = cx + rrx * radius
+      const tipRy = cy + rry * radius
+
+      // Preenchimento com gradiente radial
       const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, radius)
       grad.addColorStop(0, 'rgba(59, 130, 246, 0.5)')
       grad.addColorStop(0.3, 'rgba(59, 130, 246, 0.25)')
       grad.addColorStop(1, 'rgba(59, 130, 246, 0)')
-      ctx.fillStyle = grad
-      ctx.fill()
 
       ctx.beginPath()
       ctx.moveTo(cx, cy)
-      ctx.lineTo(cx + Math.cos(startAngle) * radius, cy + Math.sin(startAngle) * radius)
+      ctx.lineTo(tipLx, tipLy)
+      ctx.lineTo(tipRx, tipRy)
+      ctx.closePath()
+      ctx.fillStyle = grad
+      ctx.fill()
+
+      // Bordas do triângulo
+      ctx.beginPath()
       ctx.moveTo(cx, cy)
-      ctx.lineTo(cx + Math.cos(endAngle) * radius, cy + Math.sin(endAngle) * radius)
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)'
+      ctx.lineTo(tipLx, tipLy)
+      ctx.moveTo(cx, cy)
+      ctx.lineTo(tipRx, tipRy)
+      ctx.strokeStyle = 'rgba(59, 130, 246, 0.5)'
       ctx.lineWidth = 1.5
       ctx.stroke()
     }
