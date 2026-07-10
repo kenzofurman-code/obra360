@@ -299,10 +299,10 @@ def main():
     # ── Salva resultado no Firebase ──────────────────────────────────────────
     firebase_client.salvar_waypoints(args.id, waypoints_corrigidos, status='processado')
 
-    print(f"\n✅ Pipeline concluído com sucesso!")
+    print(f"\n[OK] Pipeline concluido com sucesso!")
     print(f"   Vistoria ID: {args.id}")
     print(f"   Waypoints salvos: {len(waypoints_corrigidos)}")
-    print(f"   Recarregue a página no site para ver a trajetória corrigida.")
+    print(f"   Recarregue a pagina no site para ver a trajetoria corrigida.")
 
 
 if __name__ == '__main__':
