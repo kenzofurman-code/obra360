@@ -786,6 +786,17 @@ export default function Visita() {
               </button>
             </div>
 
+            {/* Banner de status de processamento automático */}
+            {visita.status === 'processado' && (
+              <div className="flex items-center gap-2 bg-green-500/20 border border-green-500/40 rounded-lg px-3 py-2 mb-3">
+                <span className="text-green-400 text-lg">✓</span>
+                <div>
+                  <p className="text-green-300 text-xs font-semibold font-mono">Trajetória Processada</p>
+                  <p className="text-green-400/70 text-[10px] font-mono">Caminho gerado automaticamente por Map Matching</p>
+                </div>
+              </div>
+            )}
+
             {/* Teste com Vídeo e Planta locais */}
             <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-3 shrink-0">
               <div>
