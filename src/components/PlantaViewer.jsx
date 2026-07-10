@@ -257,8 +257,10 @@ export default function PlantaViewer({
       const { cx, cy } = toCanvasPixels(posicao.x, posicao.y)
 
       // Projeta o vetor de visão usando a mesma transformação da trajetória
+      // NOTA: para o cone FOV usamos o sinal OPOSTO do espelhamento porque o
+      // yaw da câmera já está no espaço absoluto do mundo (não precisa ser espelhado junto com a trajetória)
       const theta = ((headingOffset + 180) * Math.PI) / 180
-      const dx = espelharCaminho ? -Math.sin(yaw) : Math.sin(yaw)
+      const dx = espelharCaminho ? Math.sin(yaw) : -Math.sin(yaw)
       const dy = -Math.cos(yaw)
 
       // Vetor de visão rotacionado pela bússola (no espaço do canvas)
