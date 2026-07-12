@@ -46,6 +46,26 @@ def salvar_waypoints(visita_id: str, waypoints: list, status: str = 'processado'
     })
     print(f"[Firebase] {len(waypoints)} waypoints salvos. Status: '{status}'.")
 
+def atualizar_status(visita_id: str, status: str):
+    """Atualiza so' o campo status (usado pelo worker.py para marcar progresso)."""
+    _db.collection('visitas').document(visita_id).update({'status': status})
+    print(f"[Firebase] Vistoria {visita_id}: status='{status}'.")
+
+def atualizar_campos(visita_id: str, campos: dict):
+    """Atualiza campos arbitrarios do documento (ex.: manifest_url, waypoints, status)."""
+    _db.collection('visitas').document(visita_id).update(campos)
+    print(f"[Firebase] Vistoria {visita_id}: campos atualizados: {list(campos.keys())}.")
+
+def listar_pendentes(status: str = 'na_fila') -> list:
+    """Lista vistorias com um dado status (usado pelo worker.py no modo --poll)."""
+    docs = _db.collection('visitas').where('status', '==', status).stream()
+    out = []
+    for d in docs:
+        item = d.to_dict()
+        item['id'] = d.id
+        out.append(item)
+    return out
+
 def baixar_pdf(url: str) -> str:
     """Baixa PDF de uma URL e retorna o caminho do arquivo temporário."""
     print(f"[Firebase] Baixando planta PDF...")

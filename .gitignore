@@ -5,3 +5,14 @@ dist
 .DS_Store
 
 .vercel
+
+# Credenciais sensíveis (nunca commitar)
+serviceAccountKey.json
+*.pem
+*.key
+
+# Artefatos locais do pipeline Python (não fazem parte do produto)
+__pycache__/
+*.pyc
+tmp_slam_*/
+

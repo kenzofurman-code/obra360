@@ -24,19 +24,25 @@ export async function getVisita(id) {
 
 // ── Escrita ──────────────────────────────────────────────────────────────────
 
-export async function criarVisita({ pavimento, hls_url, thumbnail_url, planta_url, duracao_segundos, waypoints = [], is_imported = false }) {
+export async function criarVisita({
+  pavimento, hls_url, thumbnail_url, planta_url, duracao_segundos,
+  waypoints = [], is_imported = false,
+  ancora1 = null, ancora2 = null, // opcional: definida na hora do upload (ver Upload.jsx)
+  heading_offset = 0, path_scale = 0.15, espelhar_caminho = true,
+}) {
   const ref = await addDoc(collection(db, COL), {
     pavimento,
     hls_url,                          // URL do index.m3u8 no R2
     thumbnail_url: thumbnail_url || null, // URL de imagem preview (opcional)
     planta_url: planta_url || null,
     duracao_segundos: duracao_segundos || 0,
-    heading_offset: 0,                // Azimute/Norte calibrado
-    ancora1: null,                    // Ponto de referência 1 {x, y}
-    ancora2: null,                    // Ponto de referência 2 {x, y}
+    heading_offset,                   // Azimute/Norte calibrado
+    ancora1,                          // Ponto de referência 1 {x, y}
+    ancora2,                          // Ponto de referência 2 {x, y}
     waypoints: waypoints || [],
     is_imported: is_imported || false,
-    path_scale: 0.15,                 // Escala da trajetória relativa na planta
+    path_scale,                       // Escala da trajetória relativa na planta
+    espelhar_caminho,
     status: 'ready',
     data: serverTimestamp(),
   })

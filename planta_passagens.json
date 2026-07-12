@@ -1,0 +1,362 @@
+[
+  {
+    "id": "PM1_01",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.204655,
+    "y_norm": 0.146473,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_02",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.220691,
+    "y_norm": 0.176624,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 0.74
+  },
+  {
+    "id": "PM2_03",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.203636,
+    "y_norm": 0.204442,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_04",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.237849,
+    "y_norm": 0.207364,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM1_05",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.204106,
+    "y_norm": 0.223432,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_06",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.221081,
+    "y_norm": 0.245752,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM5_07",
+    "codigo": "PM5",
+    "tipo": "porta",
+    "x_norm": 0.228469,
+    "y_norm": 0.290474,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PJ6_08",
+    "codigo": "PJ6",
+    "tipo": "porta_janela",
+    "x_norm": 0.306404,
+    "y_norm": 0.320744,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PM1_09",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.184871,
+    "y_norm": 0.327937,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_10",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.20136,
+    "y_norm": 0.342788,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_11",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.184291,
+    "y_norm": 0.365903,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM1_12",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.214092,
+    "y_norm": 0.370773,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_13",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.300725,
+    "y_norm": 0.420672,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM3_14",
+    "codigo": "PM3",
+    "tipo": "porta",
+    "x_norm": 0.241656,
+    "y_norm": 0.438701,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PJ9_15",
+    "codigo": "PJ9",
+    "tipo": "porta_janela",
+    "x_norm": 0.375956,
+    "y_norm": 0.439626,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PJ3_16",
+    "codigo": "PJ3",
+    "tipo": "porta_janela",
+    "x_norm": 0.149419,
+    "y_norm": 0.447664,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PA4_17",
+    "codigo": "PA4",
+    "tipo": "porta",
+    "x_norm": 0.350381,
+    "y_norm": 0.44775,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PM3_18",
+    "codigo": "PM3",
+    "tipo": "porta",
+    "x_norm": 0.227745,
+    "y_norm": 0.46533,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_19",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.428408,
+    "y_norm": 0.483471,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM1_20",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.440056,
+    "y_norm": 0.484968,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PA4_21",
+    "codigo": "PA4",
+    "tipo": "porta",
+    "x_norm": 0.152028,
+    "y_norm": 0.49219,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PM3_22",
+    "codigo": "PM3",
+    "tipo": "porta",
+    "x_norm": 0.362725,
+    "y_norm": 0.562587,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PCF_23",
+    "codigo": "PCF",
+    "tipo": "porta",
+    "x_norm": 0.284375,
+    "y_norm": 0.571416,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.05
+  },
+  {
+    "id": "PM3_24",
+    "codigo": "PM3",
+    "tipo": "porta",
+    "x_norm": 0.406533,
+    "y_norm": 0.601342,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM3_25",
+    "codigo": "PM3",
+    "tipo": "porta",
+    "x_norm": 0.241459,
+    "y_norm": 0.60521,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM5_26",
+    "codigo": "PM5",
+    "tipo": "porta",
+    "x_norm": 0.186712,
+    "y_norm": 0.62884,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM3_27",
+    "codigo": "PM3",
+    "tipo": "porta",
+    "x_norm": 0.319769,
+    "y_norm": 0.636629,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM2_28",
+    "codigo": "PM2",
+    "tipo": "porta",
+    "x_norm": 0.188658,
+    "y_norm": 0.71733,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PJ3_29",
+    "codigo": "PJ3",
+    "tipo": "porta_janela",
+    "x_norm": 0.30351,
+    "y_norm": 0.721719,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PJ3_30",
+    "codigo": "PJ3",
+    "tipo": "porta_janela",
+    "x_norm": 0.360252,
+    "y_norm": 0.721719,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PJ5_31",
+    "codigo": "PJ5",
+    "tipo": "porta_janela",
+    "x_norm": 0.116382,
+    "y_norm": 0.736351,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PJ1_32",
+    "codigo": "PJ1",
+    "tipo": "porta_janela",
+    "x_norm": 0.167071,
+    "y_norm": 0.736351,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PJ7_33",
+    "codigo": "PJ7",
+    "tipo": "porta_janela",
+    "x_norm": 0.427661,
+    "y_norm": 0.736521,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PA4_34",
+    "codigo": "PA4",
+    "tipo": "porta",
+    "x_norm": 0.230234,
+    "y_norm": 0.751281,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  },
+  {
+    "id": "PM1_35",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.229264,
+    "y_norm": 0.649836,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM1_36",
+    "codigo": "PM1",
+    "tipo": "porta",
+    "x_norm": 0.229264,
+    "y_norm": 0.678771,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM7_37",
+    "codigo": "PM7",
+    "tipo": "porta",
+    "x_norm": 0.39251,
+    "y_norm": 0.595313,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM6_38",
+    "codigo": "PM6",
+    "tipo": "porta",
+    "x_norm": 0.34309,
+    "y_norm": 0.604009,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PM6_39",
+    "codigo": "PM6",
+    "tipo": "porta",
+    "x_norm": 0.316511,
+    "y_norm": 0.608289,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.03
+  },
+  {
+    "id": "PA9_40",
+    "codigo": "PA9",
+    "tipo": "porta",
+    "x_norm": 0.266055,
+    "y_norm": 0.484755,
+    "metodo_alinhamento": "geometria_arco",
+    "dist_referencia_pontos": 1.04
+  }
+]

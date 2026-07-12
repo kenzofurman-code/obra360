@@ -1,10 +1,11 @@
 // src/pages/Upload.jsx
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { criarVisita } from '../lib/visitas'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../lib/firebase'
 import * as tus from 'tus-js-client'
+import PlantaViewer from '../components/PlantaViewer'
 
 const PAVIMENTOS = [
   'Térreo', 'Mezanino',
@@ -31,6 +32,36 @@ export default function Upload() {
   
   // Estado para Upload da Planta Baixa
   const [plantaFile, setPlantaFile] = useState(null)
+
+  // Ancoragem antecipada: define o ponto de partida na planta JA no upload,
+  // em vez de deixar pra depois (Visita.jsx) - evita a vistoria ficar "pendente
+  // de calibracao" e o risco de uma aba antiga sobrescrever a ancora depois
+  // (ver conversa sobre o bug de "ancora saindo do lugar"). O objetivo e' que,
+  // quando o cliente abrir os panoramas prontos, a trajetoria ja esteja
+  // alinhada - sem etapa manual extra.
+  const [plantaPreviewUrl, setPlantaPreviewUrl] = useState(null)
+  const [ancora1, setAncora1] = useState(null)
+  const [modoCalibrarAncora, setModoCalibrarAncora] = useState(false)
+
+  useEffect(() => {
+    let blobUrl = null
+    if (plantaFile) {
+      if (plantaFile.type === 'application/pdf') {
+        const reader = new FileReader()
+        reader.onload = (e) => setPlantaPreviewUrl(e.target.result)
+        reader.readAsDataURL(plantaFile)
+      } else {
+        blobUrl = URL.createObjectURL(plantaFile)
+        setPlantaPreviewUrl(blobUrl)
+      }
+    } else if (form.planta_url.trim()) {
+      setPlantaPreviewUrl(form.planta_url.trim())
+    } else {
+      setPlantaPreviewUrl(null)
+    }
+    return () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [plantaFile, form.planta_url])
 
   // Estado para Importação de Trajetória JSON
   const [jsonFile, setJsonFile] = useState(null)
@@ -162,6 +193,7 @@ export default function Upload() {
               duracao_segundos: parseInt(form.duracao_segundos) || 0,
               waypoints: waypoints,
               is_imported: waypoints.length > 0,
+              ancora1,
             })
             navigate(`/visita/${id}`)
           } catch (e) {
@@ -213,6 +245,7 @@ export default function Upload() {
         duracao_segundos: parseInt(form.duracao_segundos) || 0,
         waypoints: waypoints,
         is_imported: waypoints.length > 0,
+        ancora1,
       })
       navigate(`/visita/${id}`)
     } catch (e) {
@@ -380,6 +413,51 @@ export default function Upload() {
               />
             )}
           </Field>
+
+          {/* Ancoragem antecipada: marca o ponto de partida na planta ja no upload */}
+          {plantaPreviewUrl && (
+            <Field
+              label="Ponto de Partida na Planta (opcional)"
+              hint="Clique em 'Marcar ponto' e depois clique na planta, no local exato de onde você começou a gravação. Se pular, dá pra calibrar depois na tela da vistoria."
+            >
+              <div className="h-56 rounded-lg overflow-hidden border border-concreto-700 mb-2">
+                <PlantaViewer
+                  plantaUrl={plantaPreviewUrl}
+                  waypoints={[]}
+                  ancora1={ancora1}
+                  modoCalibrarAncoras={modoCalibrarAncora ? 'ancora1' : null}
+                  onClickCoordenada={(x, y) => {
+                    setAncora1({ x, y })
+                    setModoCalibrarAncora(false)
+                  }}
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setModoCalibrarAncora(v => !v)}
+                  className={`flex-1 text-xs font-mono py-2 rounded-lg border transition-colors ${
+                    modoCalibrarAncora
+                      ? 'bg-sinal-500 text-concreto-950 border-sinal-500 font-bold'
+                      : ancora1
+                        ? 'bg-concreto-800 border-sinal-600/50 text-sinal-400'
+                        : 'bg-concreto-800 border-concreto-700 text-aco-300 hover:border-sinal-500/50'
+                  }`}
+                >
+                  {modoCalibrarAncora ? 'Clique na planta...' : ancora1 ? '✓ Ponto definido (clique pra ajustar)' : 'Marcar ponto de partida'}
+                </button>
+                {ancora1 && (
+                  <button
+                    type="button"
+                    onClick={() => { setAncora1(null); setModoCalibrarAncora(false) }}
+                    className="text-alerta text-xs font-mono px-3 py-2 rounded-lg border border-concreto-700 hover:border-alerta/50"
+                  >
+                    Limpar
+                  </button>
+                )}
+              </div>
+            </Field>
+          )}
 
           {/* Trajetória Automática JSON (Gerada via Python) */}
           <Field label="Importar Trajetória (.json do Python) - Opcional" hint="Carregue o arquivo de trajetória calculado localmente">
