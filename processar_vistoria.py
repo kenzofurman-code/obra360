@@ -70,6 +70,213 @@ def desalinhar_ponto(px: float, py: float, ancora1: dict, heading_offset: float,
     return (wp_x, wp_y)
 
 
+def _interp_raw_em(raw_waypoints: list, t: float) -> tuple:
+    """Interpola x,y da trajetória BRUTA (não alinhada) num instante t."""
+    ts = [w['t'] for w in raw_waypoints]
+    xs = [w['x'] for w in raw_waypoints]
+    ys = [w['y'] for w in raw_waypoints]
+    return float(np.interp(t, ts, xs)), float(np.interp(t, ts, ys))
+
+
+def calibrar_por_portas(raw_waypoints: list, passagens: list, ancora1: dict,
+                        heading_offset: float, path_scale: float, espelhar: bool,
+                        aspecto: float = 1.0, snap_threshold: float = 0.05,
+                        min_portas: int = 4) -> tuple:
+    """
+    Recalibra (ancora1, heading_offset, path_scale, espelhar) usando as portas
+    detectadas no PDF como pontos de referência MÚLTIPLOS, em vez de confiar só
+    na âncora única configurada manualmente no site.
+
+    Motivo: a âncora única + heading/escala manual é só um CHUTE inicial - a
+    escala do SLAM monocular é arbitrária a cada vídeo (sem relação nenhuma com
+    o que foi calibrado antes/em outro vídeo), então esse chute frequentemente
+    fica torto (espelhado errado, escala errada). Isso é exatamente o que o
+    caminho_slam_6pav_FINAL.json (bom) tinha e o pipeline atual não: um ajuste
+    por mínimos quadrados usando VÁRIOS pontos de referência, com auto-detecção
+    de espelhamento e validação por holdout - ver slam_to_obra360.py
+    (align_by_references/door_quality_and_correction), cuja técnica (Umeyama)
+    é reaproveitada aqui (import, sem duplicar/alterar aquele arquivo), só que
+    usando as portas do PDF como referência em vez de pontos marcados à mão -
+    portas sempre existem numa vistoria automatizada, um gabarito manual não.
+
+    Só substitui os valores manuais se a validação (ajusta com metade das
+    portas, mede erro na outra metade) mostrar que o ajuste automático é
+    realmente bom - senão mantém o que estava configurado (preserva o caso
+    excepcional citado em tum_para_raw_waypoints, ex.: percurso de propósito
+    no sentido contrário).
+
+    Retorna (ancora1, heading_offset, path_scale, espelhar, info) - info é um
+    dict com detalhes pra log/depuração (usado_auto, n_portas, residual_val, motivo).
+    """
+    from slam_to_obra360 import umeyama
+
+    def tentar_variante(espelhar_var):
+        # 1. Chute inicial com os parâmetros ATUAIS, só pra achar quais portas a
+        #    trajetória cruza (não precisa ser preciso, só perto o suficiente pra
+        #    identificar a porta certa dentro do snap_threshold).
+        aligned = []
+        for wp in raw_waypoints:
+            px, py = alinhar_ponto(wp['x'], wp['y'], ancora1, heading_offset,
+                                   path_scale, espelhar_var, aspecto)
+            aligned.append({'t': wp['t'], 'x': px, 'y': py})
+
+        cruzamentos = []
+        for gate in passagens:
+            gx, gy = gate['x_norm'], gate['y_norm']
+            melhor_t, melhor_d = None, float('inf')
+            for pt in aligned:
+                d = math.sqrt((pt['x'] - gx) ** 2 + ((pt['y'] - gy) * aspecto) ** 2)
+                if d < melhor_d:
+                    melhor_d, melhor_t = d, pt['t']
+            if melhor_d < snap_threshold:
+                cruzamentos.append({'t': melhor_t, 'gate': gate, 'dist': melhor_d})
+        if len(cruzamentos) < min_portas:
+            return None
+
+        # 2. Pontos fonte = trajetória BRUTA (não alinhada) no instante de cada
+        #    cruzamento, já com o mirror desta variante aplicado (mesma convenção
+        #    de alinhar_ponto: dx=-wp_x se espelhar, dy=-wp_y sempre) - e alvo =
+        #    posição real da porta no PDF, em espaço FÍSICO (y * aspecto, pra
+        #    rotação/escala não ficar anisotrópica - mesma nota de alinhar_ponto).
+        fontes, alvos = [], []
+        for c in cruzamentos:
+            rx, ry = _interp_raw_em(raw_waypoints, c['t'])
+            fx = -rx if espelhar_var else rx
+            fy = -ry
+            fontes.append([fx, fy])
+            alvos.append([c['gate']['x_norm'], c['gate']['y_norm'] * aspecto])
+        fontes = np.array(fontes)
+        alvos = np.array(alvos)
+
+        # 3. Validação por holdout: ajusta (Umeyama) só com metade das portas,
+        #    mede o erro na outra metade - gate contra confiar num ajuste
+        #    coincidente/ruidoso quando há poucas portas.
+        rng = np.random.default_rng(0)
+        idx = rng.permutation(len(fontes))
+        corte = max(2, len(idx) // 2)
+        i_fit, i_val = idx[:corte], idx[corte:]
+        if len(i_val) == 0:
+            i_val = i_fit
+        T_fit = umeyama(fontes[i_fit], alvos[i_fit])
+        residual_val = float(np.linalg.norm(T_fit(fontes[i_val]) - alvos[i_val], axis=1).mean())
+
+        return {
+            'espelhar': espelhar_var,
+            'n_portas': len(cruzamentos),
+            'residual_val': residual_val,
+            'fontes': fontes,
+            'alvos': alvos,
+        }
+
+    candidatos = [r for r in (tentar_variante(False), tentar_variante(True)) if r]
+    if not candidatos:
+        return ancora1, heading_offset, path_scale, espelhar, {
+            'usado_auto': False,
+            'motivo': f'menos de {min_portas} portas detectadas - mantendo calibração manual',
+        }
+
+    melhor = min(candidatos, key=lambda c: c['residual_val'])
+
+    # Só adota o ajuste automático se o residual de validação for baixo o
+    # bastante pra confiar (5% da planta) - senão pode ser só ruído/poucas
+    # portas que bateram por acaso, e a calibração manual fica valendo.
+    LIMIAR_RESIDUAL = 0.05
+    if melhor['residual_val'] > LIMIAR_RESIDUAL:
+        return ancora1, heading_offset, path_scale, espelhar, {
+            'usado_auto': False, 'n_portas': melhor['n_portas'],
+            'residual_val': melhor['residual_val'],
+            'motivo': 'residual de validação alto demais - mantendo calibração manual',
+        }
+
+    # Ajuste final com TODAS as portas da variante vencedora (não só a metade
+    # de fit usada na validação).
+    T = umeyama(melhor['fontes'], melhor['alvos'])
+    # Extrai rotação/escala/translação avaliando T em pontos conhecidos, em vez
+    # de introspectar a closure do umeyama (mais simples e robusto a mudanças
+    # internas naquele arquivo, que não deve ser alterado).
+    o = T(np.array([[0.0, 0.0]]))[0]
+    ex = T(np.array([[1.0, 0.0]]))[0] - o
+    ey = T(np.array([[0.0, 1.0]]))[0] - o
+    escala_fit = float((np.linalg.norm(ex) + np.linalg.norm(ey)) / 2)
+    heading_fit = (math.degrees(math.atan2(ex[1], ex[0])) - 180.0) % 360
+    ancora1_fit = {'x': float(o[0]), 'y': float(o[1]) / aspecto}
+
+    return ancora1_fit, heading_fit, escala_fit, melhor['espelhar'], {
+        'usado_auto': True, 'n_portas': melhor['n_portas'],
+        'residual_val': melhor['residual_val'],
+    }
+
+
+def estabilizar_paradas(raw_waypoints: list, dur_min: float = 3.0,
+                        percentil: float = 40.0, fator: float = 0.15) -> list:
+    """
+    Congela num único ponto os trechos onde a pessoa ficou parada (ex.:
+    posicionando a câmera no início do vídeo, antes de começar a andar), em
+    vez de confiar na posição bruta do SLAM durante esse tempo.
+
+    Por que: SLAM monocular estima mal translação/escala quando há pouco ou
+    nenhum movimento real (linha de base curta demais pra triangular direito)
+    - um trecho parado pode sair com deriva/jitter na trajetória BRUTA mesmo
+    sem movimento nenhum de verdade. Isso confunde a amostragem por distância
+    do gerar_quadros.py (a distância acumulada inclui esse jitter falso) e
+    desencontra o quadro/panorama da posição real logo no início do percurso -
+    relatado num teste real em 2026-07-13 (ficou parado ajustando a câmera no
+    início, mas a trajetória já aparecia andando).
+
+    Reaproveita a MESMA detecção de "pausa" por velocidade que já existe em
+    gerar_quadros.py::alvos_por_distancia (limiar = percentil da velocidade
+    positiva * fator) - só que aqui, em vez de só marcar a pausa pra ganhar um
+    quadro extra, ela SUBSTITUI a posição (x,y) de todo o trecho parado pela
+    média do trecho. Os timestamps `t` não são tocados, então o vídeo e os
+    panoramas continuam sincronizados - só a posição espúria é corrigida.
+
+    dur_min: só congela paradas de pelo menos esse tanto de segundos (evita
+    achatar movimento real só porque desacelerou brevemente, ex. virando uma
+    esquina apertada).
+    """
+    if len(raw_waypoints) < 3:
+        return raw_waypoints
+    ts = np.array([w['t'] for w in raw_waypoints], float)
+    xs = np.array([w['x'] for w in raw_waypoints], float)
+    ys = np.array([w['y'] for w in raw_waypoints], float)
+
+    passos = np.hypot(np.diff(xs), np.diff(ys))
+    dt = np.diff(ts)
+    vel = passos / np.maximum(dt, 1e-9)
+    positivas = vel[vel > 0]
+    if len(positivas) == 0:
+        return raw_waypoints
+    limiar = max(np.percentile(positivas, percentil) * fator, 1e-9)
+    parado = vel < limiar
+
+    xs2, ys2 = xs.copy(), ys.copy()
+    n_paradas = 0
+    i = 0
+    while i < len(parado):
+        if parado[i]:
+            j = i
+            while j + 1 < len(parado) and parado[j + 1]:
+                j += 1
+            # trecho parado cobre os waypoints i..j+1 (inclusive)
+            dur = ts[j + 1] - ts[i]
+            if dur >= dur_min:
+                mx = xs[i:j + 2].mean()
+                my = ys[i:j + 2].mean()
+                xs2[i:j + 2] = mx
+                ys2[i:j + 2] = my
+                n_paradas += 1
+            i = j + 1
+        else:
+            i += 1
+
+    if n_paradas:
+        print(f"[Trajetoria] {n_paradas} parada(s) estabilizada(s) - posição "
+              "travada nesses trechos (sem distância falsa por deriva do SLAM parado).")
+
+    return [{**wp, 'x': float(xs2[k]), 'y': float(ys2[k])}
+            for k, wp in enumerate(raw_waypoints)]
+
+
 def run_trajectory(video_path: str, output_json: str, rate: float = 0.5):
     """Executa process_trajectory.py e salva JSON de trajetória bruta."""
     from process_trajectory import extract_trajectory
@@ -112,7 +319,24 @@ def run_map_matching(raw_waypoints: list, passagens: list,
     aspecto = altura/largura da página (ver pdf_extractor.get_page_aspect) - sem
     isso a distância até as portas (e a trajetória toda) fica distorcida em
     páginas não-quadradas (ver nota em alinhar_ponto).
+
+    Retorna (waypoints_corrigidos, calibracao) - calibracao e' um dict com os
+    valores de ancora1/heading_offset/path_scale/espelhar REALMENTE usados
+    (podem ter sido recalibrados automaticamente por calibrar_por_portas, ver
+    ali) e 'info' com detalhes pra log. O chamador (worker.py/main() aqui
+    mesmo) deve gravar esses valores de volta no Firestore, ja' que o site usa
+    os MESMOS campos pra re-alinhar a trajetoria na tela.
     """
+    print(f"\n[Pipeline] Calibrando automaticamente por multiplas portas (Umeyama)...")
+    ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
+        raw_waypoints, passagens, ancora1, heading_offset, path_scale, espelhar, aspecto)
+    if calib_info.get('usado_auto'):
+        print(f"  [OK] Calibracao automatica adotada: {calib_info['n_portas']} portas, "
+              f"residual de validacao={calib_info['residual_val']:.4f}")
+    else:
+        print(f"  [AVISO] Calibracao automatica NAO adotada ({calib_info.get('motivo')}) "
+              "- usando ancora/heading/escala manuais como estavam.")
+
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")
     print(f"  Heading Offset: {heading_offset}°")
@@ -205,7 +429,12 @@ def run_map_matching(raw_waypoints: list, passagens: list,
         })
 
     print(f"  Trajetória corrigida: {len(corrigida_raw)} pontos")
-    return corrigida_raw
+    calibracao = {
+        'ancora1': ancora1, 'heading_offset': heading_offset,
+        'path_scale': path_scale, 'espelhar_caminho': espelhar,
+        'info': calib_info,
+    }
+    return corrigida_raw, calibracao
 
 
 # ─── Main ───────────────────────────────────────────────────────────────────
@@ -285,6 +514,10 @@ def main():
         raw_json = os.path.join(tmp_dir, 'trajetoria_bruta.json')
         raw_waypoints = run_trajectory(video_path, raw_json, rate=args.rate)
 
+    # Congela trechos parados (ver nota completa em estabilizar_paradas) - mesma
+    # correcao aplicada no worker.py.
+    raw_waypoints = estabilizar_paradas(raw_waypoints)
+
     # ── Etapa 2: Extrair portas do PDF ──────────────────────────────────────
     if not planta_url:
         print("[ERRO] A vistoria não tem planta PDF cadastrada. Faça o upload no site.")
@@ -310,13 +543,24 @@ def main():
     os.unlink(pdf_path)  # Limpa PDF temporário
 
     # ── Etapa 3: Map Matching ────────────────────────────────────────────────
-    waypoints_corrigidos = run_map_matching(
+    waypoints_corrigidos, calibracao = run_map_matching(
         raw_waypoints, passagens, ancora1, heading_offset,
         path_scale, espelhar, snap_threshold=args.snap_threshold, aspecto=aspecto
     )
 
     # ── Salva resultado no Firebase ──────────────────────────────────────────
-    firebase_client.salvar_waypoints(args.id, waypoints_corrigidos, status='processado')
+    # Grava tambem a calibracao (pode ter sido recalibrada automaticamente por
+    # multiplas portas - ver calibrar_por_portas) pra o site re-exibir com os
+    # mesmos valores.
+    firebase_client.atualizar_campos(args.id, {
+        'waypoints': waypoints_corrigidos,
+        'status': 'processado',
+        'planta_aspecto': aspecto,
+        'ancora1': calibracao['ancora1'],
+        'heading_offset': calibracao['heading_offset'],
+        'path_scale': calibracao['path_scale'],
+        'espelhar_caminho': calibracao['espelhar_caminho'],
+    })
 
     print(f"\n[OK] Pipeline concluido com sucesso!")
     print(f"   Vistoria ID: {args.id}")

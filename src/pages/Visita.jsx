@@ -894,9 +894,13 @@ export default function Visita() {
               )}
             </div>
 
-            {/* Slider de Tamanho da Trajetória (apenas se for trajetória importada) */}
-            {isImported && (
-              <>
+            {/* Slider de Tamanho da Trajetória - disponível pra qualquer vistoria (a
+                calibração por âncora única/2-âncoras já funciona pra vistorias do
+                worker também, não só importadas; só a UI ficava presa ao isImported).
+                Útil pra achar manualmente a escala bruta correta (ex.: comparando
+                a importação direta contra o PDF) quando o auto-fit por portas não
+                for adotado. */}
+            <>
                 <div className={`bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0 ${ancora1 && ancora2 ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className="flex justify-between items-center text-xs font-mono">
                     <span className="text-aco-300 font-medium text-[11px]">Tamanho do Caminho (Escala)</span>
@@ -923,7 +927,9 @@ export default function Visita() {
                   )}
                 </div>
 
-                {/* Toggle de Espelhamento Horizontal */}
+                {/* Toggle de Espelhamento Horizontal - idem, disponível sempre (caso
+                    excepcional citado em tum_para_raw_waypoints/worker.py, ex.: percurso
+                    de propósito no sentido contrário). */}
                 <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex items-center justify-between shrink-0 font-mono text-xs">
                   <span className="text-aco-300 text-[11px]">Espelhar Trajetória (Inverter E/D)</span>
                   <label className="relative inline-flex items-center cursor-pointer">
@@ -936,8 +942,7 @@ export default function Visita() {
                     <div className="w-9 h-5 bg-concreto-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-aco-200 after:border-concreto-700 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sinal-500 peer-checked:after:bg-concreto-950"></div>
                   </label>
                 </div>
-              </>
-            )}
+            </>
 
             {/* Editor de Waypoints */}
             <div className="flex-1 min-h-0 flex flex-col">

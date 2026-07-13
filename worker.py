@@ -54,7 +54,8 @@ except ImportError:
 
 sys.path.insert(0, SCRIPT_DIR)
 import firebase_client
-from processar_vistoria import run_trajectory, run_pdf_extractor, run_map_matching
+from processar_vistoria import (run_trajectory, run_pdf_extractor, run_map_matching,
+                                estabilizar_paradas)
 
 
 # ─── Video: R2 ou local ──────────────────────────────────────────────────────
@@ -221,6 +222,12 @@ def processar_visita(visita_id, video_local=None):
             raw_json = os.path.join(tmp_dir, 'trajetoria_bruta.json')
             raw_waypoints = run_trajectory(video_path, raw_json, rate=0.5)
 
+        # 2.5 Congela trechos parados (ex.: posicionando a camera no inicio do
+        # video) - SLAM parado pode derivar/tremer e isso conta como distancia
+        # falsa na amostragem do gerar_quadros.py, desencontrando o quadro da
+        # posicao real logo no comeco do percurso (ver estabilizar_paradas).
+        raw_waypoints = estabilizar_paradas(raw_waypoints)
+
         # 3. Portas do PDF vetorial (aspecto da pagina e' necessario pro Map Matching
         # nao distorcer a trajetoria em paginas nao-quadradas - ver alinhar_ponto)
         pdf_path = firebase_client.baixar_pdf(planta_url)
@@ -228,8 +235,14 @@ def processar_visita(visita_id, video_local=None):
         passagens, aspecto = run_pdf_extractor(pdf_path, passagens_json)
         os.unlink(pdf_path)
 
-        # 4. Map matching (ancora + correcao por porta) - mesma logica do frontend
-        waypoints_corrigidos = run_map_matching(
+        # 4. Map matching (ancora + correcao por porta) - mesma logica do frontend.
+        # calibracao traz ancora1/heading_offset/path_scale/espelhar_caminho -
+        # PODEM ter sido recalibrados automaticamente por multiplas portas
+        # (calibrar_por_portas em processar_vistoria.py), ja que a ancora unica
+        # manual e' so um chute (escala do SLAM monocular e' arbitraria a cada
+        # video). Gravamos esses valores de volta no Firestore abaixo (passo 6)
+        # pra que o site use a MESMA calibracao ao re-exibir a trajetoria.
+        waypoints_corrigidos, calibracao = run_map_matching(
             raw_waypoints, passagens, ancora1, heading_offset, path_scale, espelhar,
             aspecto=aspecto)
         waypoints_json = os.path.join(tmp_dir, 'waypoints_corrigidos.json')
@@ -244,7 +257,11 @@ def processar_visita(visita_id, video_local=None):
         # o site (Visita.jsx) precisa do MESMO valor pra desfazer a transformacao
         # sem distorcer (senao teria que re-parsear o PDF no navegador so pra isso).
         dados = {'waypoints': waypoints_corrigidos, 'status': 'processado',
-                 'planta_aspecto': aspecto}
+                 'planta_aspecto': aspecto,
+                 'ancora1': calibracao['ancora1'],
+                 'heading_offset': calibracao['heading_offset'],
+                 'path_scale': calibracao['path_scale'],
+                 'espelhar_caminho': calibracao['espelhar_caminho']}
         r2_public_url = os.environ.get('R2_PUBLIC_URL')
         if manifest_path and r2_public_url:
             dados['manifest_url'] = f"{r2_public_url}/{visita_id}/manifest.json"
