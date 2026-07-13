@@ -141,8 +141,12 @@ def gerar_config(work_dir, cols, rows, fps):
 def rodar_docker(docker_image, work_dir, video_nome, vocab_nome, cfg_nome,
                   manter_mapa, mapa_nome):
     eval_dir = "/data/eval"
+    # run_video_slam nao esta no PATH da imagem - o binario fica em
+    # /stella_vslam_examples/build/ (e' onde o shell da imagem abre por padrao,
+    # ver "Running on Docker" da doc do stella_vslam). Entra la antes de chamar.
     cmd_interno = (
-        f"run_video_slam -v /data/{vocab_nome} -c /data/{cfg_nome} "
+        "cd /stella_vslam_examples/build && "
+        f"./run_video_slam -v /data/{vocab_nome} -c /data/{cfg_nome} "
         f"-m /data/{video_nome} --frame-skip 1 --no-sleep --viewer none "
         f"--eval-log-dir {eval_dir}"
     )

@@ -53,10 +53,13 @@ export default function Visita() {
   // Função para alinhar as coordenadas relativas da trajetória na planta baixa
   const alinharPonto = useCallback((pt) => {
     if (!pt) return null
-    if (!isImported) return pt
 
-    // 1. Alinhamento por 2 âncoras (Procrustes 2D)
-    if (ancora1 && ancora2 && waypoints.length > 1) {
+    // 1. Alinhamento por 2 âncoras (Procrustes 2D) - SÓ para trajetória IMPORTADA
+    //    sem passar pelo Map Matching do backend. processar_vistoria.py/worker.py já
+    //    fazem sua própria correção (âncora + snap nas portas do PDF) antes de salvar;
+    //    aplicar aqui uma 2ª calibração por Procrustes (que deriva escala/rotação
+    //    comparando 1º/último ponto com âncora A/B) desfaria essa correção.
+    if (isImported && ancora1 && ancora2 && waypoints.length > 1) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
       const W2 = sorted[sorted.length - 1]
@@ -90,23 +93,24 @@ export default function Visita() {
       }
     }
 
-    // 2. Alinhamento por 1 âncora + Escala + Giro da Bússola
-    if (ancora1 && waypoints.length > 0) {
-      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
-      const W1 = sorted[0]
+    // 2. Alinhamento por 1 âncora + Escala + Giro da Bússola - MESMA transformação
+    //    que o backend usa (alinhar_ponto em processar_vistoria.py). Aplica SEMPRE
+    //    que houver âncora A, seja trajetória importada ou vinda do worker.py -
+    //    é o que garante que o site mostre exatamente o que o backend calibrou
+    //    (incluindo a correção por porta), em vez de coordenadas brutas da odometria.
+    if (ancora1) {
       const theta = ((headingOffset + 180) * Math.PI) / 180
 
-      const rawDx = pt.x - W1.x
-      const dx = espelharCaminho ? -rawDx : rawDx
-      const dy = -(pt.y - W1.y) // Inverte Y para subir na planta ao andar para frente
+      const dx = espelharCaminho ? -pt.x : pt.x
+      const dy = -pt.y
 
-      const rx = (dx * Math.cos(theta) - dy * Math.sin(theta)) * pathScale
-      const ry = (dx * Math.sin(theta) + dy * Math.cos(theta)) * pathScale
+      const rx = dx * Math.cos(theta) - dy * Math.sin(theta)
+      const ry = dx * Math.sin(theta) + dy * Math.cos(theta)
 
       return {
         ...pt,
-        x: ancora1.x + rx,
-        y: ancora1.y + ry
+        x: ancora1.x + rx * pathScale,
+        y: ancora1.y + ry * pathScale
       }
     }
 
@@ -130,10 +134,10 @@ export default function Visita() {
   // Realiza o inverso do alinhamento: converte coordenadas [0, 1] da planta para a escala/giro bruto do Python
   const desalinharPonto = useCallback((pt) => {
     if (!pt) return null
-    if (!isImported) return pt
 
-    // 1. Inverso por 2 âncoras (Procrustes 2D)
-    if (ancora1 && ancora2 && waypoints.length > 1) {
+    // 1. Inverso por 2 âncoras (Procrustes 2D) - só para trajetória IMPORTADA (ver
+    //    mesmo comentário em alinharPonto acima)
+    if (isImported && ancora1 && ancora2 && waypoints.length > 1) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
       const W2 = sorted[sorted.length - 1]
@@ -172,27 +176,21 @@ export default function Visita() {
       }
     }
 
-    // 2. Inverso por 1 âncora + Escala + Giro da Bússola
-    if (ancora1 && waypoints.length > 0) {
-      const sorted = [...waypoints].sort((a, b) => a.t - b.t)
-      const W1 = sorted[0]
-      const theta = -((headingOffset + 180) * Math.PI) / 180 // ângulo inverso
+    // 2. Inverso por 1 âncora + Escala + Giro da Bússola - MESMA transformação que o
+    //    backend usa (desalinhar_ponto em processar_vistoria.py). Aplica SEMPRE que
+    //    houver âncora A (ver comentário equivalente em alinharPonto acima).
+    if (ancora1) {
+      const rx = (pt.x - ancora1.x) / pathScale
+      const ry = (pt.y - ancora1.y) / pathScale
+      const theta = ((headingOffset + 180) * Math.PI) / 180
 
-      const dx = pt.x - ancora1.x
-      const dy = pt.y - ancora1.y
-
-      // Aplica a rotação inversa no vetor de diferença
-      const rx = (dx * Math.cos(theta) - dy * Math.sin(theta)) / pathScale
-      const ry = (dx * Math.sin(theta) + dy * Math.cos(theta)) / pathScale
-
-      // Desfaz o espelhamento horizontal se ativado
-      const finalRx = espelharCaminho ? -rx : rx
-      const finalRy = -ry // Desfaz a inversão do eixo Y
+      const dx = rx * Math.cos(theta) + ry * Math.sin(theta)
+      const dy = -rx * Math.sin(theta) + ry * Math.cos(theta)
 
       return {
         ...pt,
-        x: W1.x + finalRx,
-        y: W1.y + finalRy
+        x: espelharCaminho ? -dx : dx,
+        y: -dy
       }
     }
 
