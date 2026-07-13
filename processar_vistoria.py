@@ -28,12 +28,19 @@ STORAGE_BUCKET = 'obras360-c474d.firebasestorage.app'
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 def alinhar_ponto(wp_x: float, wp_y: float, ancora1: dict, heading_offset: float,
-                  path_scale: float, espelhar: bool) -> tuple:
+                  path_scale: float, espelhar: bool, aspecto: float = 1.0) -> tuple:
     """
     Converte coordenadas brutas da odometria (espaço do vídeo) para coordenadas
     normalizadas da planta (0-1), usando a MESMA transformacão que o site React.
 
-    Replica exatamente a função `alinharPonto` do PlantaViewer.jsx.
+    Replica exatamente a função `alinharPonto` do Visita.jsx.
+
+    aspecto = altura/largura da página do PDF da planta (ver pdf_extractor.get_page_aspect).
+    NECESSÁRIO porque o espaço normalizado [0,1]x[0,1] é anisotrópico quando a
+    página não é quadrada - rotacionar/escalar sem essa correção distorce a
+    trajetória (achata um eixo, alarga o outro). A rotação/escala acontece em
+    espaço físico (isotrópico, "unidades de largura"); só a saída em y é
+    dividida por aspecto pra voltar ao normalizado.
     """
     dx = -wp_x if espelhar else wp_x
     dy = -wp_y
@@ -42,18 +49,18 @@ def alinhar_ponto(wp_x: float, wp_y: float, ancora1: dict, heading_offset: float
     ry = dx * math.sin(theta) + dy * math.cos(theta)
     return (
         ancora1['x'] + rx * path_scale,
-        ancora1['y'] + ry * path_scale
+        ancora1['y'] + (ry * path_scale) / aspecto
     )
 
 
 def desalinhar_ponto(px: float, py: float, ancora1: dict, heading_offset: float,
-                     path_scale: float, espelhar: bool) -> tuple:
+                     path_scale: float, espelhar: bool, aspecto: float = 1.0) -> tuple:
     """
-    Inverso de alinharPonto: converte coordenadas da planta (0-1) de volta
-    para coordenadas brutas da odometria.
+    Inverso de alinhar_ponto: converte coordenadas da planta (0-1) de volta
+    para coordenadas brutas da odometria. Ver nota de aspecto em alinhar_ponto.
     """
     rx = (px - ancora1['x']) / path_scale
-    ry = (py - ancora1['y']) / path_scale
+    ry = ((py - ancora1['y']) * aspecto) / path_scale
     theta = math.radians(heading_offset + 180)
     # Rotacão inversa (transposta de R)
     dx = rx * math.cos(theta) + ry * math.sin(theta)
@@ -77,47 +84,58 @@ def run_trajectory(video_path: str, output_json: str, rate: float = 0.5):
 
 
 def run_pdf_extractor(pdf_path: str, output_json: str):
-    """Executa pdf_extractor.py e salva JSON de passagens."""
-    from pdf_extractor import extract_doors
+    """Executa pdf_extractor.py e salva JSON de passagens. Retorna (passagens, aspecto)
+    - aspecto (altura/largura da página) é necessário pro Map Matching não distorcer
+    a trajetória (ver nota em alinhar_ponto)."""
+    from pdf_extractor import extract_doors, get_page_aspect
     print(f"\n[Pipeline] Etapa 2/3: Extraindo vãos de portas do PDF...")
     passagens = extract_doors(pdf_path)
     if not passagens:
         raise RuntimeError("Nenhuma passagem encontrada no PDF.")
+    aspecto = get_page_aspect(pdf_path)
     with open(output_json, 'w', encoding='utf-8') as f:
         json.dump(passagens, f)
-    print(f"[Pipeline] Passagens extraídas: {len(passagens)} vãos -> {output_json}")
-    return passagens
+    print(f"[Pipeline] Passagens extraídas: {len(passagens)} vãos -> {output_json} "
+          f"(aspecto da página: {aspecto:.4f})")
+    return passagens, aspecto
 
 
 def run_map_matching(raw_waypoints: list, passagens: list,
                      ancora1: dict, heading_offset: float,
                      path_scale: float, espelhar: bool,
-                     snap_threshold: float = 0.04) -> list:
+                     snap_threshold: float = 0.04, aspecto: float = 1.0) -> list:
     """
     Etapa 3/3: Alinha a trajetória na planta usando âncoras do Firebase,
     detecta passagens de porta e aplica correções por Map Matching.
     Remove dependência do gabarito manual.
+
+    aspecto = altura/largura da página (ver pdf_extractor.get_page_aspect) - sem
+    isso a distância até as portas (e a trajetória toda) fica distorcida em
+    páginas não-quadradas (ver nota em alinhar_ponto).
     """
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")
     print(f"  Heading Offset: {heading_offset}°")
     print(f"  Path Scale: {path_scale}")
     print(f"  Espelhar: {espelhar}")
+    print(f"  Aspecto da página: {aspecto:.4f}")
 
     # Projeta trajetória bruta para espaço da planta
     aligned = []
     for wp in raw_waypoints:
         px, py = alinhar_ponto(wp['x'], wp['y'], ancora1, heading_offset,
-                               path_scale, espelhar)
+                               path_scale, espelhar, aspecto)
         aligned.append({'t': wp['t'], 'x': px, 'y': py})
 
-    # Detecta passagens de porta mais próximas
+    # Detecta passagens de porta mais próximas (distância em espaço FÍSICO -
+    # multiplica o delta em y por aspecto pra não subestimar/superestimar
+    # distância em páginas não-quadradas)
     passagens_detectadas = []
     for gate in passagens:
         gx, gy = gate['x_norm'], gate['y_norm']
         best_t, best_dist = None, float('inf')
         for pt in aligned:
-            d = math.sqrt((pt['x'] - gx)**2 + (pt['y'] - gy)**2)
+            d = math.sqrt((pt['x'] - gx)**2 + ((pt['y'] - gy) * aspecto)**2)
             if d < best_dist:
                 best_dist = d
                 best_t = pt['t']
@@ -175,7 +193,7 @@ def run_map_matching(raw_waypoints: list, passagens: list,
     corrigida_raw = []
     for pt in corrigida_planta:
         wx, wy = desalinhar_ponto(pt['x'], pt['y'], ancora1, heading_offset,
-                                   path_scale, espelhar)
+                                   path_scale, espelhar, aspecto)
         corrigida_raw.append({
             't': pt['t'],
             'x': round(wx, 5),
@@ -287,13 +305,13 @@ def main():
 
     pdf_path = firebase_client.baixar_pdf(planta_url)
     passagens_json = os.path.join(tmp_dir, 'passagens.json')
-    passagens = run_pdf_extractor(pdf_path, passagens_json)
+    passagens, aspecto = run_pdf_extractor(pdf_path, passagens_json)
     os.unlink(pdf_path)  # Limpa PDF temporário
 
     # ── Etapa 3: Map Matching ────────────────────────────────────────────────
     waypoints_corrigidos = run_map_matching(
         raw_waypoints, passagens, ancora1, heading_offset,
-        path_scale, espelhar, snap_threshold=args.snap_threshold
+        path_scale, espelhar, snap_threshold=args.snap_threshold, aspecto=aspecto
     )
 
     # ── Salva resultado no Firebase ──────────────────────────────────────────

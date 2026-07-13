@@ -36,6 +36,11 @@ export default function Visita() {
   const [isImported, setIsImported] = useState(false)
   const [pathScale, setPathScale] = useState(0.50)
   const [espelharCaminho, setEspelharCaminho] = useState(true)
+  // Altura/largura da pagina do PDF da planta (salvo pelo worker.py via pdf_extractor.
+  // get_page_aspect) - sem isso a rotacao/escala distorce a trajetoria em paginas
+  // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
+  // no processar_vistoria.py.
+  const [plantaAspecto, setPlantaAspecto] = useState(1.0)
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
   const [listaVisitas, setListaVisitas] = useState([])
@@ -54,12 +59,12 @@ export default function Visita() {
   const alinharPonto = useCallback((pt) => {
     if (!pt) return null
 
-    // 1. Alinhamento por 2 âncoras (Procrustes 2D) - SÓ para trajetória IMPORTADA
-    //    sem passar pelo Map Matching do backend. processar_vistoria.py/worker.py já
-    //    fazem sua própria correção (âncora + snap nas portas do PDF) antes de salvar;
-    //    aplicar aqui uma 2ª calibração por Procrustes (que deriva escala/rotação
-    //    comparando 1º/último ponto com âncora A/B) desfaria essa correção.
-    if (isImported && ancora1 && ancora2 && waypoints.length > 1) {
+    // 1. Alinhamento por 2 âncoras (Procrustes 2D): deriva escala+rotação
+    //    automaticamente comparando 1º/último ponto da trajetória com âncora A/B -
+    //    disponível pra qualquer vistoria (importada ou vinda do worker.py) quando
+    //    as duas âncoras estiverem definidas. É a forma mais simples de calibrar
+    //    (2 cliques), preferida sobre ajustar heading/escala manualmente no modo 2.
+    if (ancora1 && ancora2 && waypoints.length > 1) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
       const W2 = sorted[sorted.length - 1]
@@ -68,8 +73,11 @@ export default function Visita() {
       const dWy = W2.y - W1.y
       const distW = Math.sqrt(dWx * dWx + dWy * dWy)
 
+      // Delta da ancora em espaco FISICO (isotropico): multiplica y por aspecto
+      // pra nao subestimar/superestimar a distancia/angulo em paginas nao-quadradas
       const dAx = ancora2.x - ancora1.x
-      const dAy = ancora2.y - ancora1.y
+      const dAyNorm = ancora2.y - ancora1.y
+      const dAy = dAyNorm * plantaAspecto
       const distA = Math.sqrt(dAx * dAx + dAy * dAy)
 
       if (distW > 0 && distA > 0) {
@@ -88,16 +96,14 @@ export default function Visita() {
         return {
           ...pt,
           x: ancora1.x + rx,
-          y: ancora1.y + ry
+          y: ancora1.y + ry / plantaAspecto
         }
       }
     }
 
     // 2. Alinhamento por 1 âncora + Escala + Giro da Bússola - MESMA transformação
-    //    que o backend usa (alinhar_ponto em processar_vistoria.py). Aplica SEMPRE
-    //    que houver âncora A, seja trajetória importada ou vinda do worker.py -
-    //    é o que garante que o site mostre exatamente o que o backend calibrou
-    //    (incluindo a correção por porta), em vez de coordenadas brutas da odometria.
+    //    que o backend usa (alinhar_ponto em processar_vistoria.py), usada quando
+    //    só a âncora A está definida (sem B ainda).
     if (ancora1) {
       const theta = ((headingOffset + 180) * Math.PI) / 180
 
@@ -110,7 +116,7 @@ export default function Visita() {
       return {
         ...pt,
         x: ancora1.x + rx * pathScale,
-        y: ancora1.y + ry * pathScale
+        y: ancora1.y + (ry * pathScale) / plantaAspecto
       }
     }
 
@@ -129,15 +135,14 @@ export default function Visita() {
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho, plantaAspecto])
 
   // Realiza o inverso do alinhamento: converte coordenadas [0, 1] da planta para a escala/giro bruto do Python
   const desalinharPonto = useCallback((pt) => {
     if (!pt) return null
 
-    // 1. Inverso por 2 âncoras (Procrustes 2D) - só para trajetória IMPORTADA (ver
-    //    mesmo comentário em alinharPonto acima)
-    if (isImported && ancora1 && ancora2 && waypoints.length > 1) {
+    // 1. Inverso por 2 âncoras (Procrustes 2D) - ver comentário em alinharPonto acima
+    if (ancora1 && ancora2 && waypoints.length > 1) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
       const W2 = sorted[sorted.length - 1]
@@ -147,7 +152,8 @@ export default function Visita() {
       const distW = Math.sqrt(dWx * dWx + dWy * dWy)
 
       const dAx = ancora2.x - ancora1.x
-      const dAy = ancora2.y - ancora1.y
+      const dAyNorm = ancora2.y - ancora1.y
+      const dAy = dAyNorm * plantaAspecto
       const distA = Math.sqrt(dAx * dAx + dAy * dAy)
 
       if (distW > 0 && distA > 0) {
@@ -158,7 +164,7 @@ export default function Visita() {
         const invRotation = -rotation
 
         const dx = pt.x - ancora1.x
-        const dy = pt.y - ancora1.y
+        const dy = (pt.y - ancora1.y) * plantaAspecto // volta ao espaco fisico
 
         // Aplica a rotação inversa no vetor de diferença
         const rx = (dx * Math.cos(invRotation) - dy * Math.sin(invRotation)) / scale
@@ -181,7 +187,7 @@ export default function Visita() {
     //    houver âncora A (ver comentário equivalente em alinharPonto acima).
     if (ancora1) {
       const rx = (pt.x - ancora1.x) / pathScale
-      const ry = (pt.y - ancora1.y) / pathScale
+      const ry = ((pt.y - ancora1.y) * plantaAspecto) / pathScale
       const theta = ((headingOffset + 180) * Math.PI) / 180
 
       const dx = rx * Math.cos(theta) + ry * Math.sin(theta)
@@ -210,7 +216,7 @@ export default function Visita() {
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho, plantaAspecto])
 
   const waypointsAlinhados = useMemo(() => {
     return waypoints.map(alinharPonto)
@@ -267,7 +273,8 @@ export default function Visita() {
       setAncora2(v.ancora2 || null)
       setIsImported(v.is_imported || false)
       setPathScale(v.path_scale ?? 0.50)
-      setEspelharCaminho(v.espelhar_caminho ?? true)
+      setEspelharCaminho(v.espelhar_caminho ?? false)
+      setPlantaAspecto(v.planta_aspecto ?? 1.0)
     })
   }, [id, navigate])
 

@@ -36,6 +36,32 @@ def normalizar_coordenada(x_raw, y_raw, x_min, x_max, y_min, y_max):
     return round(x_norm, 6), round(y_norm, 6)
 
 
+def get_page_aspect(pdf_path: str) -> float:
+    """
+    Retorna a razao altura/largura (H/W) da 1a pagina do PDF da planta.
+
+    IMPORTANTE (licao do handoff, nunca corrigida no pipeline automatico):
+    coordenadas do Obra360 sao normalizadas por eixo (x/largura, y/altura) -
+    isso faz o espaco normalizado [0,1]x[0,1] ser ANISOTROPICO sempre que a
+    pagina nao for quadrada. Rotacionar/escalar um vetor bruto da odometria
+    diretamente nesse espaco (sem corrigir essa razao) distorce a trajetoria
+    (achata um eixo, alarga o outro) - exatamente o "escala esquisita,
+    horizontal maior que vertical" visto num teste real em 2026-07-12.
+    Use este valor em alinhar_ponto/desalinhar_ponto (aspecto=...).
+    """
+    try:
+        import pdfplumber
+    except ImportError:
+        print("[ERRO] pdfplumber não instalado. Execute: pip install pdfplumber")
+        sys.exit(1)
+    with pdfplumber.open(pdf_path) as pdf:
+        page = pdf.pages[0]
+        x_min, x_max, y_min, y_max = _detect_bounds(page)
+    largura = x_max - x_min
+    altura = y_max - y_min
+    return (altura / largura) if largura > 0 else 1.0
+
+
 def extract_doors(pdf_path: str) -> list:
     """
     Abre um PDF de planta baixa de obra e extrai vãos de passagem
@@ -43,6 +69,9 @@ def extract_doors(pdf_path: str) -> list:
 
     Retorna lista de dicts com:
       { id, codigo, tipo, x_norm, y_norm, metodo_alinhamento, dist_referencia_pontos }
+
+    Para o aspecto da página (necessário pra calibração sem distorção - ver
+    get_page_aspect), use get_page_aspect(pdf_path) separadamente.
     """
     try:
         import pdfplumber

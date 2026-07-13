@@ -127,6 +127,13 @@ def tum_para_raw_waypoints(traj_tum_path, proj="xz"):
     pelo usuario no site para a odometria leve. A trajetoria do SLAM so precisa
     chegar em unidades/eixos consistentes (2D, mesma origem/escala interna do
     proprio stella_vslam) para essa calibracao por ancoras funcionar igual.
+
+    NOTA (2026-07-12, confirmado num teste real): a convencao de eixo X do
+    stella_vslam sai espelhada em relacao ao que o site espera por padrao -
+    inverte aqui, uma vez, na fonte, em vez de depender do usuario ligar
+    "Espelhar" manualmente pra cada vistoria feita com SLAM. O toggle
+    espelhar_caminho continua disponivel no site pra casos excepcionais
+    (ex.: percurso feito no sentido contrario), mas o padrao agora ja sai certo.
     """
     from slam_to_obra360 import load_tum, project_to_plan
     ts, pos3d = load_tum(traj_tum_path)
@@ -137,6 +144,7 @@ def tum_para_raw_waypoints(traj_tum_path, proj="xz"):
         print(f"[SLAM] [AVISO] Apenas {len(ts)} poses rastreadas - tracking pode "
               "ter falhado ou se perdido no meio do video.")
     P = project_to_plan(pos3d, proj)
+    P[:, 0] = -P[:, 0]  # corrige espelhamento do eixo X do stella_vslam (ver nota acima)
     t0 = ts[0]
     return [{"t": round(float(t - t0), 2), "x": float(p[0]), "y": float(p[1])}
             for t, p in zip(ts, P)]
@@ -208,15 +216,17 @@ def processar_visita(visita_id, video_local=None):
             raw_json = os.path.join(tmp_dir, 'trajetoria_bruta.json')
             raw_waypoints = run_trajectory(video_path, raw_json, rate=0.5)
 
-        # 3. Portas do PDF vetorial
+        # 3. Portas do PDF vetorial (aspecto da pagina e' necessario pro Map Matching
+        # nao distorcer a trajetoria em paginas nao-quadradas - ver alinhar_ponto)
         pdf_path = firebase_client.baixar_pdf(planta_url)
         passagens_json = os.path.join(tmp_dir, 'passagens.json')
-        passagens = run_pdf_extractor(pdf_path, passagens_json)
+        passagens, aspecto = run_pdf_extractor(pdf_path, passagens_json)
         os.unlink(pdf_path)
 
         # 4. Map matching (ancora + correcao por porta) - mesma logica do frontend
         waypoints_corrigidos = run_map_matching(
-            raw_waypoints, passagens, ancora1, heading_offset, path_scale, espelhar)
+            raw_waypoints, passagens, ancora1, heading_offset, path_scale, espelhar,
+            aspecto=aspecto)
         waypoints_json = os.path.join(tmp_dir, 'waypoints_corrigidos.json')
         with open(waypoints_json, 'w', encoding='utf-8') as f:
             json.dump(waypoints_corrigidos, f)
@@ -225,8 +235,11 @@ def processar_visita(visita_id, video_local=None):
         out_dir = os.path.join(tmp_dir, 'quadros')
         manifest_path = gerar_panoramas(video_path, waypoints_json, visita_id, out_dir)
 
-        # 6. Atualiza Firestore (1 escrita so)
-        dados = {'waypoints': waypoints_corrigidos, 'status': 'processado'}
+        # 6. Atualiza Firestore (1 escrita so). Salva o aspecto da planta tambem -
+        # o site (Visita.jsx) precisa do MESMO valor pra desfazer a transformacao
+        # sem distorcer (senao teria que re-parsear o PDF no navegador so pra isso).
+        dados = {'waypoints': waypoints_corrigidos, 'status': 'processado',
+                 'planta_aspecto': aspecto}
         r2_public_url = os.environ.get('R2_PUBLIC_URL')
         if manifest_path and r2_public_url:
             dados['manifest_url'] = f"{r2_public_url}/{visita_id}/manifest.json"

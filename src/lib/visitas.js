@@ -28,7 +28,12 @@ export async function criarVisita({
   pavimento, hls_url, thumbnail_url, planta_url, duracao_segundos,
   waypoints = [], is_imported = false,
   ancora1 = null, ancora2 = null, // opcional: definida na hora do upload (ver Upload.jsx)
-  heading_offset = 0, path_scale = 0.15, espelhar_caminho = true,
+  // padrao mudou pra false em 2026-07-12: agora que o SLAM (worker.py/rodar_slam.py)
+  // ja corrige o proprio espelhamento na fonte (ver tum_para_raw_waypoints), deixar
+  // espelhar_caminho ligado por padrao inverteria de novo. Só ligue manualmente se
+  // uma vistoria especifica sair espelhada (ex.: caiu no fallback de odometria leve,
+  // que tem a convencao de eixo oposta).
+  heading_offset = 0, path_scale = 0.15, espelhar_caminho = false,
 }) {
   const ref = await addDoc(collection(db, COL), {
     pavimento,
