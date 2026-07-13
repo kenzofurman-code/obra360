@@ -245,7 +245,8 @@ def main():
 
     heading_offset = visita.get('heading_offset', 0)
     path_scale = visita.get('path_scale', 0.15)
-    espelhar = visita.get('espelhar_caminho', True)
+    # padrao False - ver mesmo comentario/motivo em worker.py::processar_visita
+    espelhar = visita.get('espelhar_caminho', False)
     planta_url = visita.get('planta_url')
 
     print(f"  Pavimento: {visita.get('pavimento', '?')}")

@@ -336,6 +336,9 @@ export default function PanoramaViewer({
       const t_now = fp.currentTime()
       const pos_now = interpolarPosicao(waypointsRef.current, t_now)
       if (!pos_now) return
+      // com <2 pontos não dá pra formar segmentos (indices ficaria vazio) - a fita
+      // ficaria "invisível" sem erro nenhum no console, então corta aqui de propósito
+      if (!waypointsRef.current || waypointsRef.current.length < 2) return
 
       if (!renderPos.initialized || Math.abs(t_now - lastTimeRibbon) > 1.5) {
         renderPos.x = pos_now.x
@@ -357,6 +360,10 @@ export default function PanoramaViewer({
         })
         const geo = new THREE.BufferGeometry()
         line3D = new THREE.Mesh(geo, material)
+        // se a geometria ficar com coordenada NaN/Infinity em algum frame (dado bruto
+        // ruim), o bounding sphere fica inválido e o three.js corta (culling) a fita da
+        // frustum silenciosamente, sem erro. Desliga o culling pra ela nunca "sumir" assim.
+        line3D.frustumCulled = false
         scene.add(line3D)
       }
 
@@ -364,7 +371,10 @@ export default function PanoramaViewer({
 
       const xc = renderPos.x
       const yc = renderPos.y
-      const sorted = [...waypointsRef.current].sort((a, b) => a.t - b.t)
+      const sorted = [...waypointsRef.current]
+        .filter((wp) => Number.isFinite(wp?.x) && Number.isFinite(wp?.y) && Number.isFinite(wp?.t))
+        .sort((a, b) => a.t - b.t)
+      if (sorted.length < 2) return
       const pathPoints = sorted.map((wp) => {
         const rawDx = (wp.x - xc) * 22
         const dx = espelharCaminhoRef.current ? -rawDx : rawDx
@@ -426,7 +436,7 @@ export default function PanoramaViewer({
       camera.position.set(0, 0, 0)
       camera.lookAt(target)
 
-      atualizarPassarela()
+      try { atualizarPassarela() } catch (e) { /* ignora erros pontuais, nao trava o loop */ }
 
       renderer.render(scene, camera)
       raf = requestAnimationFrame(animar)

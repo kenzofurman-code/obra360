@@ -177,7 +177,12 @@ def processar_visita(visita_id, video_local=None):
         raise RuntimeError("Ancora A nao definida - configure no site antes de processar.")
     heading_offset = visita.get('heading_offset', 0)
     path_scale = visita.get('path_scale', 0.15)
-    espelhar = visita.get('espelhar_caminho', True)
+    # padrao False (nao True): o SLAM ja corrige o proprio espelhamento na fonte
+    # (ver nota em tum_para_raw_waypoints) - so usar True aqui se o campo estiver
+    # EXPLICITAMENTE gravado assim no Firestore (ex.: vistoria antiga, ou caso
+    # excepcional configurado manualmente no site). Mesma convencao do criarVisita
+    # em src/lib/visitas.js - manter os dois em sincronia.
+    espelhar = visita.get('espelhar_caminho', False)
     planta_url = visita.get('planta_url')
     if not planta_url or not planta_url.lower().split('?')[0].endswith('.pdf'):
         raise RuntimeError("Vistoria sem planta PDF vetorial - obrigatoria para o Map Matching.")
