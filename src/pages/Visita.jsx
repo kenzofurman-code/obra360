@@ -2,6 +2,7 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import Player360 from '../components/Player360'
+import PanoramaViewer from '../components/PanoramaViewer'
 import PlantaViewer from '../components/PlantaViewer'
 import WaypointEditor from '../components/WaypointEditor'
 import { useVideoSync } from '../hooks/useVideoSync'
@@ -562,18 +563,36 @@ export default function Visita() {
       <main className="flex-1 w-full relative min-h-0 overflow-hidden z-10">
         
         {/* PLAYER 360° EM TELA CHEIA (Z-INDEX 0) */}
+        {/* Se a vistoria já tem manifest.json (panoramas gerados pelo worker.py), usa o
+            PanoramaViewer (fotos 360°) no lugar do Player360 (vídeo). O PanoramaViewer expõe
+            um "player" falso com a mesma API do video.js, então registrarPlayer/useVideoSync/
+            os controles de play-pause/frame e o clique-no-trajeto do PlantaViewer continuam
+            funcionando sem nenhuma outra mudança - ver comentário no topo do PanoramaViewer.jsx. */}
         <div className="absolute inset-0 w-full h-full z-0">
-          <Player360
-            hlsUrl={visita.hls_url}
-            onReady={registrarPlayer}
-            autoplay={false}
-            waypoints={waypoints}
-            posicao={posicao}
-            headingOffset={headingOffset}
-            lineOpacity={lineOpacity}
-            lineThickness={lineThickness}
-            espelharCaminho={espelharCaminho}
-          />
+          {visita.manifest_url ? (
+            <PanoramaViewer
+              manifestUrl={visita.manifest_url}
+              onReady={registrarPlayer}
+              autoplay={false}
+              waypoints={waypoints}
+              headingOffset={headingOffset}
+              lineOpacity={lineOpacity}
+              lineThickness={lineThickness}
+              espelharCaminho={espelharCaminho}
+            />
+          ) : (
+            <Player360
+              hlsUrl={visita.hls_url}
+              onReady={registrarPlayer}
+              autoplay={false}
+              waypoints={waypoints}
+              posicao={posicao}
+              headingOffset={headingOffset}
+              lineOpacity={lineOpacity}
+              lineThickness={lineThickness}
+              espelharCaminho={espelharCaminho}
+            />
+          )}
         </div>
 
         {/* CONTROL BAR INTERATIVA NO RODAPÉ (Z-INDEX 20) */}
