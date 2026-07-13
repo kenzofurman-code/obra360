@@ -151,6 +151,29 @@ def tum_para_raw_waypoints(traj_tum_path, proj="xz"):
             for t, p in zip(ts, P)]
 
 
+# ─── Corte do inicio do video (tempo parado posicionando a camera) ─────────
+
+def cortar_video_inicio(video_path, segundos, tmp_dir):
+    """Corta os primeiros `segundos` do video ANTES de rodar SLAM e
+    gerar_quadros - os dois passos usam o video_path resultante daqui, entao
+    trajetoria e frames ficam sincronizados em t=0 sem precisar editar o
+    video manualmente toda vez que o operador fica parado posicionando a
+    camera no comeco da gravacao (ver estabilizar_paradas, que resolve o MESMO
+    problema mas so depois que a trajetoria ja foi extraida - isso aqui evita
+    o problema na origem).
+
+    Reencodifica (nao usa -c copy) pra cortar exatamente no segundo pedido, e
+    nao no keyframe mais proximo - com -c copy sobraria um pedaco parado."""
+    if not segundos or segundos <= 0:
+        return video_path
+    saida = os.path.join(tmp_dir, 'video_cortado.mp4')
+    cmd = ['ffmpeg', '-y', '-ss', str(segundos), '-i', video_path,
+           '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', saida]
+    print(f"[Corte] Cortando {segundos}s do inicio do video (ffmpeg)...")
+    subprocess.run(cmd, check=True, capture_output=True)
+    return saida
+
+
 # ─── Panoramas (gerar_quadros.py, ja sabe subir pro R2 sozinho) ─────────────
 
 def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir):
@@ -170,7 +193,7 @@ def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir):
 
 # ─── Pipeline de 1 vistoria ──────────────────────────────────────────────────
 
-def processar_visita(visita_id, video_local=None):
+def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
     visita = firebase_client.get_visita(visita_id)
 
     ancora1 = visita.get('ancora1')
@@ -184,6 +207,11 @@ def processar_visita(visita_id, video_local=None):
     # excepcional configurado manualmente no site). Mesma convencao do criarVisita
     # em src/lib/visitas.js - manter os dois em sincronia.
     espelhar = visita.get('espelhar_caminho', False)
+    # --corte-inicial no CLI tem prioridade; senao usa o campo salvo na propria
+    # vistoria (corte_inicial_seg, padrao 0) - assim, uma vez configurado pra
+    # uma vistoria (ou vindo do site no futuro), continua valendo em qualquer
+    # reprocessamento sem precisar passar o argumento de novo.
+    corte_inicial = corte_inicial_seg if corte_inicial_seg is not None else visita.get('corte_inicial_seg', 0)
     planta_url = visita.get('planta_url')
     if not planta_url or not planta_url.lower().split('?')[0].endswith('.pdf'):
         raise RuntimeError("Vistoria sem planta PDF vetorial - obrigatoria para o Map Matching.")
@@ -202,6 +230,11 @@ def processar_visita(visita_id, video_local=None):
                     "(ver GAP 3 no topo do arquivo: o Upload.jsx ainda nao grava esse campo).")
             video_path = os.path.join(tmp_dir, 'video.mp4')
             baixar_video_r2(chave, video_path)
+
+        # 1.5 Corta o inicio parado (posicionamento da camera), se configurado -
+        # SLAM e gerar_quadros usam o video_path resultante, entao ficam em sincronia.
+        if corte_inicial:
+            video_path = cortar_video_inicio(video_path, corte_inicial, tmp_dir)
 
         # 2. Trajetoria bruta: tenta SLAM (alta precisao), cai para odometria leve
         traj_tum, mapa_msg = rodar_slam_se_disponivel(video_path, tmp_dir)
@@ -228,11 +261,12 @@ def processar_visita(visita_id, video_local=None):
         # posicao real logo no comeco do percurso (ver estabilizar_paradas).
         raw_waypoints = estabilizar_paradas(raw_waypoints)
 
-        # 3. Portas do PDF vetorial (aspecto da pagina e' necessario pro Map Matching
-        # nao distorcer a trajetoria em paginas nao-quadradas - ver alinhar_ponto)
+        # 3. Vaos de porta do PDF vetorial (geometria de arco - extrair_portas.py;
+        # aspecto da pagina e' necessario pro Map Matching nao distorcer a
+        # trajetoria em paginas nao-quadradas - ver alinhar_ponto)
         pdf_path = firebase_client.baixar_pdf(planta_url)
-        passagens_json = os.path.join(tmp_dir, 'passagens.json')
-        passagens, aspecto = run_pdf_extractor(pdf_path, passagens_json)
+        vaos_json = os.path.join(tmp_dir, 'vaos.json')
+        vaos, aspecto = run_pdf_extractor(pdf_path, vaos_json)
         os.unlink(pdf_path)
 
         # 4. Map matching (ancora + correcao por porta) - mesma logica do frontend.
@@ -243,7 +277,7 @@ def processar_visita(visita_id, video_local=None):
         # video). Gravamos esses valores de volta no Firestore abaixo (passo 6)
         # pra que o site use a MESMA calibracao ao re-exibir a trajetoria.
         waypoints_corrigidos, calibracao = run_map_matching(
-            raw_waypoints, passagens, ancora1, heading_offset, path_scale, espelhar,
+            raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar,
             aspecto=aspecto)
         waypoints_json = os.path.join(tmp_dir, 'waypoints_corrigidos.json')
         with open(waypoints_json, 'w', encoding='utf-8') as f:
@@ -308,6 +342,10 @@ def main():
                      help="Modo fila: observa o Firestore continuamente (ver GAP 3 no topo).")
     ap.add_argument('--intervalo', type=float, default=15.0,
                      help="Segundos entre checagens no modo --poll (padrao 15).")
+    ap.add_argument('--corte-inicial', type=float, default=None, dest='corte_inicial',
+                     help="Segundos a cortar do inicio do video (ex.: tempo parado "
+                          "posicionando a camera antes de andar). Se omitido, usa o "
+                          "campo corte_inicial_seg salvo na propria vistoria (padrao 0).")
     args = ap.parse_args()
 
     if not os.path.exists(SERVICE_ACCOUNT):
@@ -318,7 +356,7 @@ def main():
     if args.poll:
         poll_loop(args.intervalo)
     elif args.id:
-        processar_visita(args.id, video_local=args.video)
+        processar_visita(args.id, video_local=args.video, corte_inicial_seg=args.corte_inicial)
     else:
         print("[ERRO] Use --id <visita_id> [--video ...] para rodar uma vez, ou --poll para a fila.")
         sys.exit(1)

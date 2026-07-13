@@ -37,6 +37,12 @@ export default function Visita() {
   const [isImported, setIsImported] = useState(false)
   const [pathScale, setPathScale] = useState(0.50)
   const [espelharCaminho, setEspelharCaminho] = useState(true)
+  // Segundos a cortar do inicio do video (ex.: tempo parado posicionando a
+  // camera antes de andar) - lido pelo worker.py (corte_inicial_seg) antes de
+  // rodar SLAM/gerar_quadros, pra trajetoria e frames ficarem sincronizados
+  // em t=0 sem precisar editar o video manualmente. So tem efeito no PROXIMO
+  // reprocessamento (worker.py), nao no viewer.
+  const [corteInicial, setCorteInicial] = useState(0)
   // Altura/largura da pagina do PDF da planta (salvo pelo worker.py via pdf_extractor.
   // get_page_aspect) - sem isso a rotacao/escala distorce a trajetoria em paginas
   // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
@@ -275,6 +281,7 @@ export default function Visita() {
       setIsImported(v.is_imported || false)
       setPathScale(v.path_scale ?? 0.50)
       setEspelharCaminho(v.espelhar_caminho ?? false)
+      setCorteInicial(v.corte_inicial_seg ?? 0)
       setPlantaAspecto(v.planta_aspecto ?? 1.0)
     })
   }, [id, navigate])
@@ -431,6 +438,7 @@ export default function Visita() {
         ancora2,
         path_scale: pathScale,
         espelhar_caminho: espelharCaminho,
+        corte_inicial_seg: corteInicial,
       })
       mostrarToast('Alterações salvas com sucesso!')
     } catch (e) {
@@ -904,15 +912,33 @@ export default function Visita() {
                 <div className={`bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0 ${ancora1 && ancora2 ? 'opacity-40 pointer-events-none' : ''}`}>
                   <div className="flex justify-between items-center text-xs font-mono">
                     <span className="text-aco-300 font-medium text-[11px]">Tamanho do Caminho (Escala)</span>
-                    <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{Math.round(pathScale * 100)}%</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0.1"
+                        max="200"
+                        step="0.1"
+                        disabled={!!(ancora1 && ancora2)}
+                        value={(pathScale * 100).toFixed(1)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          if (!Number.isNaN(v) && v > 0) setPathScale(v / 100)
+                        }}
+                        className="w-14 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">%</span>
+                    </div>
                   </div>
+                  {/* step fino (0.1%) - o valor real costuma ficar numa faixa estreita
+                      (ex.: 2-5% num video com SLAM), e 1 em 1% nao dava precisao
+                      suficiente pra achar o ponto certo arrastando o slider */}
                   <input
                     type="range"
-                    min="1"
+                    min="0.1"
                     max="100"
-                    step="1"
+                    step="0.1"
                     disabled={!!(ancora1 && ancora2)}
-                    value={Math.round(pathScale * 100)}
+                    value={pathScale * 100}
                     onChange={e => setPathScale(parseFloat(e.target.value) / 100)}
                     className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
                   />
@@ -941,6 +967,33 @@ export default function Visita() {
                     />
                     <div className="w-9 h-5 bg-concreto-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-aco-200 after:border-concreto-700 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sinal-500 peer-checked:after:bg-concreto-950"></div>
                   </label>
+                </div>
+
+                {/* Corte do inicio do video (tempo parado posicionando a camera) -
+                    lido pelo worker.py no PROXIMO reprocessamento; nao afeta o
+                    viewer nem a trajetoria ja processada agora. */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Corte Inicial do Vídeo (parado no início)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        max="120"
+                        step="0.5"
+                        value={corteInicial}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          setCorteInicial(Number.isNaN(v) || v < 0 ? 0 : v)
+                        }}
+                        className="w-14 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">seg</span>
+                    </div>
+                  </div>
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Segundos a descartar do início do vídeo (ex.: tempo parado posicionando a câmera). Só faz efeito no próximo reprocessamento pelo worker.
+                  </p>
                 </div>
             </>
 
