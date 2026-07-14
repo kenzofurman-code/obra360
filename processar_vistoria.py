@@ -35,7 +35,7 @@ def alinhar_ponto(wp_x: float, wp_y: float, ancora1: dict, heading_offset: float
 
     Replica exatamente a função `alinharPonto` do Visita.jsx.
 
-    aspecto = altura/largura da página do PDF da planta (ver pdf_extractor.get_page_aspect).
+    aspecto = altura/largura da página do PDF da planta (ver extrair_portas.py, campo "pagina").
     NECESSÁRIO porque o espaço normalizado [0,1]x[0,1] é anisotrópico quando a
     página não é quadrada - rotacionar/escalar sem essa correção distorce a
     trajetória (achata um eixo, alarga o outro). A rotação/escala acontece em
@@ -78,10 +78,83 @@ def _interp_raw_em(raw_waypoints: list, t: float) -> tuple:
     return float(np.interp(t, ts, xs)), float(np.interp(t, ts, ys))
 
 
-def calibrar_por_portas(raw_waypoints: list, passagens: list, ancora1: dict,
+def _seg_intersect(p1, p2, q1, q2):
+    """Interseção de segmento p1-p2 com q1-q2 (retorna s em [0,1] ao longo de
+    p1-p2, ou None se não cruzam). Mesma geometria de slam_to_obra360.py::
+    door_quality_and_correction, reimplementada aqui pra não precisar alterar
+    aquele arquivo."""
+    d1, d2 = p2 - p1, q2 - q1
+    den = d1[0] * d2[1] - d1[1] * d2[0]
+    if abs(den) < 1e-12:
+        return None
+    s = ((q1[0] - p1[0]) * d2[1] - (q1[1] - p1[1]) * d2[0]) / den
+    u = ((q1[0] - p1[0]) * d1[1] - (q1[1] - p1[1]) * d1[0]) / den
+    return s if (0 <= s <= 1 and 0 <= u <= 1) else None
+
+
+def vaos_em_fisico(vaos: list, aspecto: float) -> list:
+    """Pré-escala hinge/extremos de cada vão pro espaço FÍSICO (y * aspecto) -
+    faz isso uma vez só em vez de repetir a cada chamada de detectar_cruzamentos_vaos."""
+    A = np.array([1.0, aspecto])
+    return [dict(v, hinge=(np.array(v['hinge']) * A).tolist(),
+                extremos=[(np.array(e) * A).tolist() for e in v['extremos']])
+            for v in vaos]
+
+
+def detectar_cruzamentos_vaos(pontos_fisicos: list, vaos_fisico: list) -> list:
+    """
+    Detecta em quais instantes a trajetória (já alinhada E em coordenadas
+    FÍSICAS - ver nota de aspecto em alinhar_ponto) cruza geometricamente o
+    arco de abertura de cada vão (hinge -> extremo, esticado 30% pras pontas).
+    Mesma técnica de slam_to_obra360.py::door_quality_and_correction (não
+    alterada aqui - só reimplementada), retornando as correspondências em vez
+    de aplicar a correção direto, pra alimentar o ajuste global (Umeyama) em
+    calibrar_por_portas.
+
+    Por que geometria de cruzamento em vez de "ponto mais próximo do centro
+    da porta": o prédio pode ter várias portas do MESMO modelo (PM1, PM2...
+    são código de tamanho/tipo, não de porta única) próximas entre si - exigir
+    uma passagem de verdade pelo vão é bem mais seletivo do que só
+    proximidade, evitando grudar na porta errada quando o alinhamento ainda
+    está impreciso (era exatamente esse o problema num teste real de 2026-07-13).
+
+    pontos_fisicos: [{'t','x','y'}, ...] já alinhados e com y multiplicado por
+    aspecto. vaos_fisico: saída de vaos_em_fisico().
+
+    Retorna [{'t', 'centro', 'dist', 'nome'}, ...] - um por vão cruzado (o
+    cruzamento de menor residual, se o vão tiver mais de um extremo/arco).
+    """
+    X = np.array([[p['x'], p['y']] for p in pontos_fisicos])
+    ts_local = np.array([p['t'] for p in pontos_fisicos])
+
+    cruzamentos = []
+    for v in vaos_fisico:
+        h = np.array(v['hinge'])
+        best = None
+        for e in map(np.array, v['extremos']):
+            centro = (h + e) / 2
+            largura = np.linalg.norm(e - h)
+            dd = np.hypot(X[:, 0] - centro[0], X[:, 1] - centro[1])
+            for j in np.where(dd < 0.03 + largura)[0]:
+                if j + 1 >= len(X):
+                    continue
+                ext = 0.3 * (e - h)
+                s = _seg_intersect(X[j], X[j + 1], h - ext, e + ext)
+                if s is not None:
+                    ptraj = X[j] + s * (X[j + 1] - X[j])
+                    r = centro - ptraj
+                    tc = ts_local[j] + s * (ts_local[min(j + 1, len(ts_local) - 1)] - ts_local[j])
+                    cand = (float(np.linalg.norm(r)), float(tc), centro, v.get('nome', '?'))
+                    if best is None or cand[0] < best[0]:
+                        best = cand
+        if best:
+            cruzamentos.append({'dist': best[0], 't': best[1], 'centro': best[2], 'nome': best[3]})
+    return cruzamentos
+
+
+def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
                         heading_offset: float, path_scale: float, espelhar: bool,
-                        aspecto: float = 1.0, snap_threshold: float = 0.05,
-                        min_portas: int = 4) -> tuple:
+                        aspecto: float = 1.0, min_portas: int = 4) -> tuple:
     """
     Recalibra (ancora1, heading_offset, path_scale, espelhar) usando as portas
     detectadas no PDF como pontos de referência MÚLTIPLOS, em vez de confiar só
@@ -105,52 +178,80 @@ def calibrar_por_portas(raw_waypoints: list, passagens: list, ancora1: dict,
     excepcional citado em tum_para_raw_waypoints, ex.: percurso de propósito
     no sentido contrário).
 
+    IMPORTANTE (aprendido num teste real em 2026-07-13): a correspondência
+    porta<->trajetória usa detectar_cruzamentos_vaos() - exige uma passagem
+    GEOMÉTRICA pelo arco de abertura da porta (não só "ponto mais próximo do
+    centro"), então é bem mais resistente a grudar na porta errada mesmo com
+    modelos repetidos no prédio (PM1/PM2/PM3 = código de tamanho/tipo, não de
+    porta única). Mesmo assim é um REFINAMENTO a partir do chute
+    (ancora1/heading_offset/path_scale) atual, não um solver totalmente livre
+    de chute - o refinamento iterativo abaixo ajuda a convergir quando o chute
+    já está na ordem de grandeza certa. Se você já validou manualmente (ex.:
+    arrastando os sliders no site até os corredores alinharem), salve esses
+    valores ANTES de rodar o worker, pra dar um chute inicial melhor.
+
     Retorna (ancora1, heading_offset, path_scale, espelhar, info) - info é um
     dict com detalhes pra log/depuração (usado_auto, n_portas, residual_val, motivo).
     """
     from slam_to_obra360 import umeyama
 
-    def tentar_variante(espelhar_var):
-        # 1. Chute inicial com os parâmetros ATUAIS, só pra achar quais portas a
-        #    trajetória cruza (não precisa ser preciso, só perto o suficiente pra
-        #    identificar a porta certa dentro do snap_threshold).
-        aligned = []
-        for wp in raw_waypoints:
-            px, py = alinhar_ponto(wp['x'], wp['y'], ancora1, heading_offset,
-                                   path_scale, espelhar_var, aspecto)
-            aligned.append({'t': wp['t'], 'x': px, 'y': py})
+    vaos_fis = vaos_em_fisico(vaos, aspecto)
 
-        cruzamentos = []
-        for gate in passagens:
-            gx, gy = gate['x_norm'], gate['y_norm']
-            melhor_t, melhor_d = None, float('inf')
-            for pt in aligned:
-                d = math.sqrt((pt['x'] - gx) ** 2 + ((pt['y'] - gy) * aspecto) ** 2)
-                if d < melhor_d:
-                    melhor_d, melhor_t = d, pt['t']
-            if melhor_d < snap_threshold:
-                cruzamentos.append({'t': melhor_t, 'gate': gate, 'dist': melhor_d})
-        if len(cruzamentos) < min_portas:
-            return None
-
-        # 2. Pontos fonte = trajetória BRUTA (não alinhada) no instante de cada
-        #    cruzamento, já com o mirror desta variante aplicado (mesma convenção
-        #    de alinhar_ponto: dx=-wp_x se espelhar, dy=-wp_y sempre) - e alvo =
-        #    posição real da porta no PDF, em espaço FÍSICO (y * aspecto, pra
-        #    rotação/escala não ficar anisotrópica - mesma nota de alinhar_ponto).
+    def _fontes_alvos(cruzamentos, espelhar_var):
         fontes, alvos = [], []
         for c in cruzamentos:
             rx, ry = _interp_raw_em(raw_waypoints, c['t'])
             fx = -rx if espelhar_var else rx
             fy = -ry
             fontes.append([fx, fy])
-            alvos.append([c['gate']['x_norm'], c['gate']['y_norm'] * aspecto])
-        fontes = np.array(fontes)
-        alvos = np.array(alvos)
+            alvos.append(list(c['centro']))
+        return np.array(fontes), np.array(alvos)
 
-        # 3. Validação por holdout: ajusta (Umeyama) só com metade das portas,
-        #    mede o erro na outra metade - gate contra confiar num ajuste
-        #    coincidente/ruidoso quando há poucas portas.
+    def _decompor(T):
+        """Extrai (ancora1, heading_offset, path_scale) do similarity transform T,
+        avaliando em pontos conhecidos em vez de introspectar a closure do
+        umeyama (robusto a mudancas internas naquele arquivo, que nao deve
+        ser alterado)."""
+        o = T(np.array([[0.0, 0.0]]))[0]
+        ex = T(np.array([[1.0, 0.0]]))[0] - o
+        ey = T(np.array([[0.0, 1.0]]))[0] - o
+        escala = float((np.linalg.norm(ex) + np.linalg.norm(ey)) / 2)
+        heading = (math.degrees(math.atan2(ex[1], ex[0])) - 180.0) % 360
+        anc = {'x': float(o[0]), 'y': float(o[1]) / aspecto}
+        return anc, heading, escala
+
+    def _cruzamentos_com(ancora_i, heading_i, escala_i, espelhar_var):
+        pontos_fis = []
+        for wp in raw_waypoints:
+            px, py = alinhar_ponto(wp['x'], wp['y'], ancora_i, heading_i,
+                                   escala_i, espelhar_var, aspecto)
+            pontos_fis.append({'t': wp['t'], 'x': px, 'y': py * aspecto})
+        return detectar_cruzamentos_vaos(pontos_fis, vaos_fis)
+
+    def tentar_variante(espelhar_var):
+        # Refinamento iterativo: comeca com o chute atual, detecta os
+        # cruzamentos geometricos, reajusta (Umeyama) e repete com o ajuste
+        # da rodada anterior - um alinhamento melhor pode revelar cruzamentos
+        # reais que nao apareciam antes (ou descartar os que so' pareciam
+        # cruzar por acaso do chute ainda impreciso).
+        ancora_i, heading_i, escala_i = ancora1, heading_offset, path_scale
+        cruzamentos = None
+        for _ in range(3):
+            novos = _cruzamentos_com(ancora_i, heading_i, escala_i, espelhar_var)
+            if len(novos) < min_portas:
+                break  # fica com o resultado da rodada anterior
+            cruzamentos = novos
+            fontes, alvos = _fontes_alvos(cruzamentos, espelhar_var)
+            T = umeyama(fontes, alvos)
+            ancora_i, heading_i, escala_i = _decompor(T)
+
+        if cruzamentos is None or len(cruzamentos) < min_portas:
+            return None
+
+        # Validação por holdout: ajusta (Umeyama) só com metade das portas
+        # finais, mede o erro na outra metade - gate contra confiar num ajuste
+        # coincidente/ruidoso quando há poucas portas.
+        fontes, alvos = _fontes_alvos(cruzamentos, espelhar_var)
         rng = np.random.default_rng(0)
         idx = rng.permutation(len(fontes))
         corte = max(2, len(idx) // 2)
@@ -191,15 +292,7 @@ def calibrar_por_portas(raw_waypoints: list, passagens: list, ancora1: dict,
     # Ajuste final com TODAS as portas da variante vencedora (não só a metade
     # de fit usada na validação).
     T = umeyama(melhor['fontes'], melhor['alvos'])
-    # Extrai rotação/escala/translação avaliando T em pontos conhecidos, em vez
-    # de introspectar a closure do umeyama (mais simples e robusto a mudanças
-    # internas naquele arquivo, que não deve ser alterado).
-    o = T(np.array([[0.0, 0.0]]))[0]
-    ex = T(np.array([[1.0, 0.0]]))[0] - o
-    ey = T(np.array([[0.0, 1.0]]))[0] - o
-    escala_fit = float((np.linalg.norm(ex) + np.linalg.norm(ey)) / 2)
-    heading_fit = (math.degrees(math.atan2(ex[1], ex[0])) - 180.0) % 360
-    ancora1_fit = {'x': float(o[0]), 'y': float(o[1]) / aspecto}
+    ancora1_fit, heading_fit, escala_fit = _decompor(T)
 
     return ancora1_fit, heading_fit, escala_fit, melhor['espelhar'], {
         'usado_auto': True, 'n_portas': melhor['n_portas'],
@@ -291,34 +384,91 @@ def run_trajectory(video_path: str, output_json: str, rate: float = 0.5):
 
 
 def run_pdf_extractor(pdf_path: str, output_json: str):
-    """Executa pdf_extractor.py e salva JSON de passagens. Retorna (passagens, aspecto)
-    - aspecto (altura/largura da página) é necessário pro Map Matching não distorcer
-    a trajetória (ver nota em alinhar_ponto)."""
-    from pdf_extractor import extract_doors, get_page_aspect
-    print(f"\n[Pipeline] Etapa 2/3: Extraindo vãos de portas do PDF...")
-    passagens = extract_doors(pdf_path)
-    if not passagens:
-        raise RuntimeError("Nenhuma passagem encontrada no PDF.")
-    aspecto = get_page_aspect(pdf_path)
+    """
+    Executa extrair_portas.py e salva o JSON de vãos. Retorna (vaos, aspecto).
+
+    Substituiu pdf_extractor.py (texto + curva mais próxima) nesta etapa em
+    2026-07-13: o casamento por PROXIMIDADE DE PONTO é fácil de grudar na
+    porta errada quando o prédio tem várias portas do mesmo modelo repetidas
+    (PM1/PM2/PM3 são código de tamanho/tipo, não de porta única - confirmado
+    num teste real onde o auto-fit convergiu de volta pro chute errado).
+    extrair_portas.py detecta o ARCO de abertura de verdade (ajusta um círculo
+    às polilinhas do PDF vetorial, valida raio/curvatura/ângulo de abertura) e
+    guarda hinge (dobradiça) + extremos do arco - isso permite exigir uma
+    passagem GEOMETRICA pelo vão (ver detectar_cruzamentos_vaos), não só
+    proximidade. Mesma técnica/arquivo usado no teste de referência que bateu
+    1.3% de erro vs gabarito (slam_to_obra360.py::door_quality_and_correction).
+    """
+    from extrair_portas import extrair
+    print(f"\n[Pipeline] Etapa 2/3: Extraindo vãos de portas do PDF (geometria de arco)...")
+    vaos, n_arcs, (W, H) = extrair(pdf_path)
+    if not vaos:
+        raise RuntimeError("Nenhuma porta com arco de abertura detectado no PDF.")
+    aspecto = (H / W) if W > 0 else 1.0
     with open(output_json, 'w', encoding='utf-8') as f:
-        json.dump(passagens, f)
-    print(f"[Pipeline] Passagens extraídas: {len(passagens)} vãos -> {output_json} "
-          f"(aspecto da página: {aspecto:.4f})")
-    return passagens, aspecto
+        json.dump({"pagina": {"largura": W, "altura": H, "aspecto": aspecto}, "vaos": vaos}, f)
+    print(f"[Pipeline] Vãos extraídos: {len(vaos)} portas (de {n_arcs} arcos únicos) -> "
+          f"{output_json} (aspecto da página: {aspecto:.4f})")
+    return vaos, aspecto
 
 
-def run_map_matching(raw_waypoints: list, passagens: list,
+def run_ambientes_extractor(pdf_path: str, output_json: str):
+    """Executa extrair_ambientes.py e salva o JSON de ambientes. Retorna a
+    lista de ambientes (pode vir vazia se o PDF nao tiver rotulos de area
+    reconheciveis - nesse caso a associacao de ambiente por waypoint
+    simplesmente nao acontece, sem quebrar o resto do pipeline)."""
+    from extrair_ambientes import extrair as extrair_ambientes
+    print(f"\n[Pipeline] Extraindo ambientes (nome + area m²) do PDF...")
+    ambientes, (W, H) = extrair_ambientes(pdf_path)
+    with open(output_json, 'w', encoding='utf-8') as f:
+        json.dump({"pagina": {"largura": W, "altura": H}, "ambientes": ambientes}, f, ensure_ascii=False)
+    print(f"[Pipeline] Ambientes extraídos: {len(ambientes)} -> {output_json}")
+    return ambientes
+
+
+def associar_ambientes(pontos_planta: list, ambientes: list, aspecto: float = 1.0) -> list:
+    """Associa cada ponto (ja alinhado/normalizado, com 'x','y') ao ambiente
+    mais ESPECIFICO (menor area_m2) cujo circulo de alcance o contem.
+
+    Por que "menor area primeiro": os circulos de alcance dos ambientes
+    (raio derivado da propria area - ver extrair_ambientes.py) SE SOBREPOEM
+    quando um comodo pequeno (ex.: duto de 0.4m²) fica dentro do alcance de
+    um comodo grande vizinho (ex.: sala de 30m²) - nesse caso o ponto deve
+    ficar marcado com o ambiente mais especifico (o duto), nao o mais geral
+    (a sala). Confirmado com o Pedro em 2026-07-14.
+
+    Ambientes sem 'raio_fis' (escala nao calibravel nesse PDF) sao ignorados.
+    Pontos fora do alcance de qualquer ambiente ficam sem o campo 'ambiente'."""
+    validos = [a for a in ambientes if a.get('raio_fis') is not None]
+    ordenados = sorted(validos, key=lambda a: a['area_m2'])  # menor primeiro = prioridade
+
+    resultado = []
+    for pt in pontos_planta:
+        x_fis, y_fis = pt['x'], pt['y'] * aspecto
+        achado = None
+        for amb in ordenados:
+            ax_fis, ay_fis = amb['x'], amb['y'] * aspecto
+            dist = ((x_fis - ax_fis) ** 2 + (y_fis - ay_fis) ** 2) ** 0.5
+            if dist <= amb['raio_fis']:
+                achado = amb
+                break
+        extra = {'ambiente': achado['nome'], 'ambiente_area_m2': achado['area_m2']} if achado else {}
+        resultado.append({**pt, **extra})
+    return resultado
+
+
+def run_map_matching(raw_waypoints: list, vaos: list,
                      ancora1: dict, heading_offset: float,
                      path_scale: float, espelhar: bool,
-                     snap_threshold: float = 0.04, aspecto: float = 1.0) -> list:
+                     aspecto: float = 1.0, ambientes: list = None) -> list:
     """
     Etapa 3/3: Alinha a trajetória na planta usando âncoras do Firebase,
-    detecta passagens de porta e aplica correções por Map Matching.
-    Remove dependência do gabarito manual.
+    detecta cruzamentos geométricos com os vãos de porta (extrair_portas.py)
+    e aplica correções por Map Matching. Remove dependência do gabarito manual.
 
-    aspecto = altura/largura da página (ver pdf_extractor.get_page_aspect) - sem
-    isso a distância até as portas (e a trajetória toda) fica distorcida em
-    páginas não-quadradas (ver nota em alinhar_ponto).
+    aspecto = altura/largura da página (ver extrair_portas.py) - sem isso a
+    distância até as portas (e a trajetória toda) fica distorcida em páginas
+    não-quadradas (ver nota em alinhar_ponto).
 
     Retorna (waypoints_corrigidos, calibracao) - calibracao e' um dict com os
     valores de ancora1/heading_offset/path_scale/espelhar REALMENTE usados
@@ -329,7 +479,7 @@ def run_map_matching(raw_waypoints: list, passagens: list,
     """
     print(f"\n[Pipeline] Calibrando automaticamente por multiplas portas (Umeyama)...")
     ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
-        raw_waypoints, passagens, ancora1, heading_offset, path_scale, espelhar, aspecto)
+        raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
     if calib_info.get('usado_auto'):
         print(f"  [OK] Calibracao automatica adotada: {calib_info['n_portas']} portas, "
               f"residual de validacao={calib_info['residual_val']:.4f}")
@@ -344,46 +494,39 @@ def run_map_matching(raw_waypoints: list, passagens: list,
     print(f"  Espelhar: {espelhar}")
     print(f"  Aspecto da página: {aspecto:.4f}")
 
-    # Projeta trajetória bruta para espaço da planta
+    # Projeta trajetória bruta para espaço da planta (normalizado) e também
+    # pra espaço FÍSICO (y*aspecto) - a deteccao de cruzamento geometrico
+    # precisa do fisico (ver nota de aspecto em alinhar_ponto).
     aligned = []
+    aligned_fis = []
     for wp in raw_waypoints:
         px, py = alinhar_ponto(wp['x'], wp['y'], ancora1, heading_offset,
                                path_scale, espelhar, aspecto)
         aligned.append({'t': wp['t'], 'x': px, 'y': py})
+        aligned_fis.append({'t': wp['t'], 'x': px, 'y': py * aspecto})
 
-    # Detecta passagens de porta mais próximas (distância em espaço FÍSICO -
-    # multiplica o delta em y por aspecto pra não subestimar/superestimar
-    # distância em páginas não-quadradas)
-    passagens_detectadas = []
-    for gate in passagens:
-        gx, gy = gate['x_norm'], gate['y_norm']
-        best_t, best_dist = None, float('inf')
-        for pt in aligned:
-            d = math.sqrt((pt['x'] - gx)**2 + ((pt['y'] - gy) * aspecto)**2)
-            if d < best_dist:
-                best_dist = d
-                best_t = pt['t']
-        if best_dist < snap_threshold:
-            passagens_detectadas.append({'t': best_t, 'gate': gate, 'dist': best_dist})
-
-    passagens_detectadas = sorted(passagens_detectadas, key=lambda x: x['t'])
-    # Remove duplicatas temporais (intervalo mínimo de 4s)
+    # Detecta cruzamentos GEOMÉTRICOS com os vãos de porta (passagem real pelo
+    # arco, não só proximidade - ver detectar_cruzamentos_vaos) e remove
+    # duplicatas temporais (intervalo mínimo de 4s).
+    cruzamentos = detectar_cruzamentos_vaos(aligned_fis, vaos_em_fisico(vaos, aspecto))
+    cruzamentos = sorted(cruzamentos, key=lambda c: c['t'])
     filtradas = []
-    for p in passagens_detectadas:
-        if not filtradas or (p['t'] - filtradas[-1]['t']) > 4.0:
-            filtradas.append(p)
+    for c in cruzamentos:
+        if not filtradas or (c['t'] - filtradas[-1]['t']) > 4.0:
+            filtradas.append(c)
 
     print(f"  Portas detectadas: {len(filtradas)}")
-    for p in filtradas:
-        print(f"  t={p['t']:.1f}s | {p['gate'].get('codigo','?')} | dist={p['dist']*100:.2f}%")
+    for c in filtradas:
+        print(f"  t={c['t']:.1f}s | {c['nome']} | dist={c['dist']*100:.2f}%")
 
-    # Cria vetores de correção para snap nas portas
+    # Cria vetores de correção para snap nas portas (centro do vão de volta
+    # pro espaço normalizado, dividindo y por aspecto)
     correcoes = []
-    for p in filtradas:
-        pt_al = next(pt for pt in aligned if pt['t'] == p['t'])
-        cx = p['gate']['x_norm'] - pt_al['x']
-        cy = p['gate']['y_norm'] - pt_al['y']
-        correcoes.append((p['t'], cx, cy))
+    for c in filtradas:
+        pt_al = min(aligned, key=lambda pt: abs(pt['t'] - c['t']))
+        cx = c['centro'][0] - pt_al['x']
+        cy = (c['centro'][1] / aspecto) - pt_al['y']
+        correcoes.append((c['t'], cx, cy))
 
     # Aplica interpolacão linear das correções em toda a trajetória
     corrigida_planta = []
@@ -406,12 +549,22 @@ def run_map_matching(raw_waypoints: list, passagens: list,
                     break
         evento = 'caminho'
         extra = {}
-        for p in filtradas:
-            if abs(pt['t'] - p['t']) < 0.1:
+        for c in filtradas:
+            if abs(pt['t'] - c['t']) < 0.1:
                 evento = 'passagem'
-                extra = {'passagem_id': p['gate']['id'], 'codigo': p['gate'].get('codigo','')}
+                extra = {'passagem_id': c['nome'], 'codigo': c['nome']}
         corrigida_planta.append({'t': pt['t'], 'x': round(pt['x'] + cx, 5),
                                   'y': round(pt['y'] + cy, 5), 'evento': evento, **extra})
+
+    # Associa cada ponto ao ambiente mais especifico (menor area) cujo circulo
+    # de alcance o contem - so' roda se ambientes foi passado (opcional, nao
+    # quebra chamadores antigos que ainda nao usam essa feature).
+    if ambientes:
+        n_antes = len(ambientes)
+        corrigida_planta = associar_ambientes(corrigida_planta, ambientes, aspecto)
+        n_com_ambiente = sum(1 for pt in corrigida_planta if pt.get('ambiente'))
+        print(f"  Ambientes: {n_com_ambiente}/{len(corrigida_planta)} pontos associados "
+              f"(de {n_antes} ambiente(s) detectado(s) no PDF)")
 
     # Converte de volta para espaço bruto da odometria para compatibilidade com o site
     corrigida_raw = []
@@ -425,7 +578,7 @@ def run_map_matching(raw_waypoints: list, passagens: list,
             'label': '',
             'observacao': '',
             'evento': pt.get('evento', 'caminho'),
-            **{k: v for k, v in pt.items() if k in ('passagem_id', 'codigo')}
+            **{k: v for k, v in pt.items() if k in ('passagem_id', 'codigo', 'ambiente', 'ambiente_area_m2')}
         })
 
     print(f"  Trajetória corrigida: {len(corrigida_raw)} pontos")
@@ -449,8 +602,6 @@ def main():
         help='Pula etapa de odometria e usa os waypoints já salvos no Firebase')
     parser.add_argument('--rate', type=float, default=0.5,
         help='Taxa de amostragem EKF em segundos (padrão: 0.5)')
-    parser.add_argument('--snap-threshold', type=float, default=0.04,
-        help='Raio de snap para portas em coordenadas normalizadas (padrão: 0.04)')
     args = parser.parse_args()
 
     # Verifica credenciais Firebase
@@ -538,20 +689,23 @@ def main():
         return
 
     pdf_path = firebase_client.baixar_pdf(planta_url)
-    passagens_json = os.path.join(tmp_dir, 'passagens.json')
-    passagens, aspecto = run_pdf_extractor(pdf_path, passagens_json)
+    vaos_json = os.path.join(tmp_dir, 'vaos.json')
+    vaos, aspecto = run_pdf_extractor(pdf_path, vaos_json)
+    ambientes_json = os.path.join(tmp_dir, 'ambientes.json')
+    ambientes = run_ambientes_extractor(pdf_path, ambientes_json)
     os.unlink(pdf_path)  # Limpa PDF temporário
 
     # ── Etapa 3: Map Matching ────────────────────────────────────────────────
     waypoints_corrigidos, calibracao = run_map_matching(
-        raw_waypoints, passagens, ancora1, heading_offset,
-        path_scale, espelhar, snap_threshold=args.snap_threshold, aspecto=aspecto
+        raw_waypoints, vaos, ancora1, heading_offset,
+        path_scale, espelhar, aspecto=aspecto, ambientes=ambientes
     )
 
     # ── Salva resultado no Firebase ──────────────────────────────────────────
     # Grava tambem a calibracao (pode ter sido recalibrada automaticamente por
     # multiplas portas - ver calibrar_por_portas) pra o site re-exibir com os
-    # mesmos valores.
+    # mesmos valores, e o inventario de ambientes (nome+area, mesmo sem foto
+    # associada) pra uso futuro de progresso por comodo/pavimento/obra.
     firebase_client.atualizar_campos(args.id, {
         'waypoints': waypoints_corrigidos,
         'status': 'processado',
@@ -560,6 +714,7 @@ def main():
         'heading_offset': calibracao['heading_offset'],
         'path_scale': calibracao['path_scale'],
         'espelhar_caminho': calibracao['espelhar_caminho'],
+        'ambientes': ambientes,
     })
 
     print(f"\n[OK] Pipeline concluido com sucesso!")

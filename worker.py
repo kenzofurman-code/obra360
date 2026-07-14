@@ -55,7 +55,7 @@ except ImportError:
 sys.path.insert(0, SCRIPT_DIR)
 import firebase_client
 from processar_vistoria import (run_trajectory, run_pdf_extractor, run_map_matching,
-                                estabilizar_paradas)
+                                run_ambientes_extractor, estabilizar_paradas)
 
 
 # ─── Video: R2 ou local ──────────────────────────────────────────────────────
@@ -267,6 +267,11 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         pdf_path = firebase_client.baixar_pdf(planta_url)
         vaos_json = os.path.join(tmp_dir, 'vaos.json')
         vaos, aspecto = run_pdf_extractor(pdf_path, vaos_json)
+        # Ambientes (nome + area m² -> raio de alcance) do mesmo PDF, pra associar
+        # cada waypoint ao comodo onde foi tirado (ver extrair_ambientes.py e a
+        # discussao com o Pedro em 2026-07-14 sobre progresso de obra por ambiente).
+        ambientes_json = os.path.join(tmp_dir, 'ambientes.json')
+        ambientes = run_ambientes_extractor(pdf_path, ambientes_json)
         os.unlink(pdf_path)
 
         # 4. Map matching (ancora + correcao por porta) - mesma logica do frontend.
@@ -278,7 +283,7 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         # pra que o site use a MESMA calibracao ao re-exibir a trajetoria.
         waypoints_corrigidos, calibracao = run_map_matching(
             raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar,
-            aspecto=aspecto)
+            aspecto=aspecto, ambientes=ambientes)
         waypoints_json = os.path.join(tmp_dir, 'waypoints_corrigidos.json')
         with open(waypoints_json, 'w', encoding='utf-8') as f:
             json.dump(waypoints_corrigidos, f)
@@ -295,7 +300,8 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
                  'ancora1': calibracao['ancora1'],
                  'heading_offset': calibracao['heading_offset'],
                  'path_scale': calibracao['path_scale'],
-                 'espelhar_caminho': calibracao['espelhar_caminho']}
+                 'espelhar_caminho': calibracao['espelhar_caminho'],
+                 'ambientes': ambientes}
         r2_public_url = os.environ.get('R2_PUBLIC_URL')
         if manifest_path and r2_public_url:
             dados['manifest_url'] = f"{r2_public_url}/{visita_id}/manifest.json"
