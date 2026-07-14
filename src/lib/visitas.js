@@ -2,7 +2,7 @@
 import {
   collection, doc, getDocs, getDoc,
   addDoc, updateDoc, deleteDoc,
-  query, orderBy, serverTimestamp
+  query, where, orderBy, serverTimestamp
 } from 'firebase/firestore'
 import { db } from './firebase'
 
@@ -22,6 +22,21 @@ export async function getVisita(id) {
   return { id: snap.id, ...snap.data() }
 }
 
+// Historico de vistorias de UM local, mais recente primeiro (por data_vistoria,
+// nao pelo timestamp de upload) - base do drawer de historico/comparacao do
+// item 4.5. Ordena em memoria (nao no Firestore) pra nao exigir um indice
+// composto (where + orderBy em campos diferentes precisaria de indice manual).
+export async function listarVisitasDoLocal(localId) {
+  const q = query(collection(db, COL), where('local_id', '==', localId))
+  const snap = await getDocs(q)
+  const visitas = snap.docs.map(d => ({ id: d.id, ...d.data() }))
+  return visitas.sort((a, b) => {
+    const da = a.data_vistoria?.toDate?.() ?? new Date(a.data_vistoria ?? 0)
+    const db_ = b.data_vistoria?.toDate?.() ?? new Date(b.data_vistoria ?? 0)
+    return db_ - da
+  })
+}
+
 // ── Escrita ──────────────────────────────────────────────────────────────────
 
 export async function criarVisita({
@@ -34,9 +49,20 @@ export async function criarVisita({
   // uma vistoria especifica sair espelhada (ex.: caiu no fallback de odometria leve,
   // que tem a convencao de eixo oposta).
   heading_offset = 0, path_scale = 0.15, espelhar_caminho = false,
+  // obra_id/local_id: novos campos (2026-07-14) - ligam a vistoria ao seletor
+  // de projeto/aba de locais (ver obras.js/locais.js). data_vistoria e' a data
+  // REAL da inspecao (editavel no Upload.jsx, pode diferir da data de upload
+  // guardada em `data` abaixo via serverTimestamp) - e' o campo usado pra
+  // ordenar o historico de um local (ver listarVisitasDoLocal) no futuro
+  // drawer de historico/comparacao (item 4.5). Ambos opcionais por enquanto
+  // pra nao quebrar vistorias antigas criadas antes dessa mudanca.
+  obra_id = null, local_id = null, data_vistoria = null,
 }) {
   const ref = await addDoc(collection(db, COL), {
     pavimento,
+    obra_id,
+    local_id,
+    data_vistoria: data_vistoria || new Date(),
     hls_url,                          // URL do index.m3u8 no R2
     thumbnail_url: thumbnail_url || null, // URL de imagem preview (opcional)
     planta_url: planta_url || null,

@@ -1,7 +1,9 @@
 // src/pages/Upload.jsx
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import { criarVisita } from '../lib/visitas'
+import { getObra } from '../lib/obras'
+import { getLocal } from '../lib/locais'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../lib/firebase'
 import * as tus from 'tus-js-client'
@@ -13,8 +15,22 @@ const PAVIMENTOS = [
   'Cobertura', 'Ático',
 ]
 
+function hojeISO() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
 export default function Upload() {
   const navigate = useNavigate()
+  // obraId/localId: presentes quando o upload vem da aba de Locais (fluxo novo,
+  // ver Locais.jsx) - nesse caso o local (nome + planta) ja' esta' definido,
+  // e essa vistoria e' mais uma entrada no historico daquele local (ver
+  // visitas.js::listarVisitasDoLocal). Sem eles, cai no fluxo antigo (rota
+  // "/upload" solta, sem obra/local associado) - mantido por compatibilidade.
+  const { obraId, localId } = useParams()
+  const [obra, setObra] = useState(null)
+  const [local, setLocal] = useState(null)
+  const [carregandoLocal, setCarregandoLocal] = useState(!!localId)
   const [uploadMethod, setUploadMethod] = useState('direct') // 'direct' | 'manual'
   const [form, setForm] = useState({
     pavimento: '1° Pavimento',
@@ -23,7 +39,21 @@ export default function Upload() {
     planta_url: '',
     duracao_segundos: '',
   })
-  
+  // Data REAL da vistoria (pode ser diferente da data do upload, ex.: video
+  // gravado ha' alguns dias e so' enviado agora) - e' o campo usado pra
+  // ordenar o historico de um local no futuro drawer de historico/comparacao
+  // (item 4.5). Guardado como string YYYY-MM-DD (valor nativo do <input type=date>).
+  const [dataVistoria, setDataVistoria] = useState(hojeISO())
+
+  useEffect(() => {
+    if (!obraId || !localId) return
+    Promise.all([getObra(obraId), getLocal(localId)]).then(([o, l]) => {
+      setObra(o)
+      setLocal(l)
+      setCarregandoLocal(false)
+    })
+  }, [obraId, localId])
+
   // Estados para Upload do Vídeo
   const [videoFile, setVideoFile] = useState(null)
   const [uploadProgress, setUploadProgress] = useState(0)
@@ -44,6 +74,14 @@ export default function Upload() {
   const [modoCalibrarAncora, setModoCalibrarAncora] = useState(false)
 
   useEffect(() => {
+    // Fluxo scoped (obraId/localId): a planta ja' pertence ao Local (ver
+    // Locais.jsx) - so' vale de referencia pra marcar o ponto de partida,
+    // nao ha' campo de upload de planta aqui (ver renderizacao condicional
+    // do Field "Planta Baixa" mais abaixo).
+    if (localId) {
+      setPlantaPreviewUrl(local?.planta_url || null)
+      return
+    }
     let blobUrl = null
     if (plantaFile) {
       if (plantaFile.type === 'application/pdf') {
@@ -61,7 +99,7 @@ export default function Upload() {
     }
     return () => { if (blobUrl) URL.revokeObjectURL(blobUrl) }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [plantaFile, form.planta_url])
+  }, [plantaFile, form.planta_url, localId, local])
 
   // Estado para Importação de Trajetória JSON
   const [jsonFile, setJsonFile] = useState(null)
@@ -165,10 +203,12 @@ export default function Upload() {
         },
         onSuccess: async function () {
           setUploadStatus('Vídeo enviado! Enviando imagem da planta baixa...')
-          
-          let finalPlantaUrl = form.planta_url.trim() || null
+
+          // Fluxo scoped: a planta ja' pertence ao Local (Locais.jsx cuida do
+          // upload dela) - nao ha' o que subir aqui, so' reaproveitar a URL.
+          let finalPlantaUrl = localId ? (local?.planta_url || null) : (form.planta_url.trim() || null)
           try {
-            if (plantaFile) {
+            if (!localId && plantaFile) {
               finalPlantaUrl = await uploadPlanta(plantaFile)
             }
           } catch (uploadError) {
@@ -179,14 +219,17 @@ export default function Upload() {
           }
 
           setUploadStatus('Salvando vistoria no Firebase...')
-          
+
           // Formatos de URLs geradas automaticamente pelo Cloudflare Stream
           const hlsUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/manifest/video.m3u8`
           const thumbnailUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`
 
           try {
             const id = await criarVisita({
-              pavimento: form.pavimento,
+              pavimento: localId ? (local?.nome || form.pavimento) : form.pavimento,
+              obra_id: obraId || null,
+              local_id: localId || null,
+              data_vistoria: new Date(`${dataVistoria}T12:00:00`),
               hls_url: hlsUrl,
               thumbnail_url: thumbnailUrl,
               planta_url: finalPlantaUrl,
@@ -225,9 +268,9 @@ export default function Upload() {
     setSalvando(true)
     setErro('')
 
-    let finalPlantaUrl = form.planta_url.trim() || null
+    let finalPlantaUrl = localId ? (local?.planta_url || null) : (form.planta_url.trim() || null)
     try {
-      if (plantaFile) {
+      if (!localId && plantaFile) {
         finalPlantaUrl = await uploadPlanta(plantaFile)
       }
     } catch (uploadError) {
@@ -238,7 +281,10 @@ export default function Upload() {
 
     try {
       const id = await criarVisita({
-        pavimento: form.pavimento,
+        pavimento: localId ? (local?.nome || form.pavimento) : form.pavimento,
+        obra_id: obraId || null,
+        local_id: localId || null,
+        data_vistoria: new Date(`${dataVistoria}T12:00:00`),
         hls_url: form.hls_url.trim(),
         thumbnail_url: form.thumbnail_url.trim() || null,
         planta_url: finalPlantaUrl,
@@ -261,12 +307,19 @@ export default function Upload() {
       <header className="border-b border-concreto-700 bg-concreto-900 shadow-md">
         <div className="max-w-4xl mx-auto px-6 py-4 flex items-center gap-4">
           <button
-            onClick={() => navigate('/')}
+            onClick={() => navigate(obraId ? `/obra/${obraId}` : '/')}
             className="font-mono text-xs text-aco-400 hover:text-aco-200 px-3 py-1.5 rounded bg-concreto-800/50 transition-colors"
           >
             ← Voltar
           </button>
-          <h1 className="text-base font-semibold text-aco-100">Nova Vistoria 360°</h1>
+          <div>
+            <h1 className="text-base font-semibold text-aco-100">Nova Vistoria 360°</h1>
+            {localId && (
+              <p className="font-mono text-[10px] text-aco-400">
+                {obra?.nome ? `${obra.nome} — ` : ''}{local?.nome || (carregandoLocal ? 'carregando...' : '')}
+              </p>
+            )}
+          </div>
         </div>
       </header>
 
@@ -301,15 +354,33 @@ export default function Upload() {
             </div>
           </div>
 
-          <Field label="Pavimento">
-            <select
-              value={form.pavimento}
-              onChange={e => set('pavimento', e.target.value)}
+          {localId ? (
+            <Field label="Local">
+              <div className="w-full bg-concreto-800/60 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-300 font-mono">
+                {local?.nome || (carregandoLocal ? 'Carregando...' : '—')}
+              </div>
+            </Field>
+          ) : (
+            <Field label="Pavimento">
+              <select
+                value={form.pavimento}
+                onChange={e => set('pavimento', e.target.value)}
+                disabled={uploading || salvando}
+                className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
+              >
+                {PAVIMENTOS.map(p => <option key={p}>{p}</option>)}
+              </select>
+            </Field>
+          )}
+
+          <Field label="Data da Vistoria" hint="Data real da gravação - pode ser diferente da data de hoje se o vídeo foi gravado antes e só está sendo enviado agora. É essa data que ordena o histórico de versões deste local.">
+            <input
+              type="date"
+              value={dataVistoria}
+              onChange={e => setDataVistoria(e.target.value)}
               disabled={uploading || salvando}
               className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2.5 text-xs text-aco-200 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
-            >
-              {PAVIMENTOS.map(p => <option key={p}>{p}</option>)}
-            </select>
+            />
           </Field>
 
           {/* Renderização Condicional de Entrada do Vídeo */}
@@ -375,44 +446,57 @@ export default function Upload() {
             </>
           )}
 
-          {/* Planta Baixa: Upload ou link manual */}
-          <Field label="Planta Baixa (PDF ou Imagem)" hint="Selecione a planta baixa (PDF vetorizado ou imagem PNG/JPG) para mapear os waypoints">
-            {plantaFile ? (
-              <div className="flex items-center justify-between bg-concreto-800 border border-concreto-700 p-2.5 rounded-lg text-xs">
-                <span className="font-mono text-aco-200 truncate">{plantaFile.name}</span>
-                <button
-                  type="button"
-                  onClick={() => setPlantaFile(null)}
-                  className="text-alerta text-xs hover:underline font-mono bg-transparent border-0 cursor-pointer"
-                >
-                  Remover
-                </button>
+          {/* Planta Baixa: no fluxo scoped (obra/local) a planta ja' pertence
+              ao Local (ver Locais.jsx) - so' mostra confirmação, sem campo de
+              upload duplicado. No fluxo legado (sem local), mantém upload/link
+              manual como antes. */}
+          {localId ? (
+            <Field label="Planta Baixa">
+              <div className="flex items-center justify-between bg-concreto-800/60 border border-concreto-700 p-2.5 rounded-lg text-xs">
+                <span className="font-mono text-aco-300">
+                  {local?.planta_url ? '✓ Planta cadastrada no local' : (carregandoLocal ? 'Carregando...' : '⚠ Sem planta cadastrada')}
+                </span>
               </div>
-            ) : (
-              <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded-lg p-3 bg-concreto-800/10 text-center cursor-pointer transition-all">
+            </Field>
+          ) : (
+            <Field label="Planta Baixa (PDF ou Imagem)" hint="Selecione a planta baixa (PDF vetorizado ou imagem PNG/JPG) para mapear os waypoints">
+              {plantaFile ? (
+                <div className="flex items-center justify-between bg-concreto-800 border border-concreto-700 p-2.5 rounded-lg text-xs">
+                  <span className="font-mono text-aco-200 truncate">{plantaFile.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => setPlantaFile(null)}
+                    className="text-alerta text-xs hover:underline font-mono bg-transparent border-0 cursor-pointer"
+                  >
+                    Remover
+                  </button>
+                </div>
+              ) : (
+                <div className="relative border border-dashed border-concreto-700 hover:border-sinal-500/50 rounded-lg p-3 bg-concreto-800/10 text-center cursor-pointer transition-all">
+                  <input
+                    type="file"
+                    accept="application/pdf, image/png, image/jpeg, image/jpg"
+                    onChange={e => {
+                      const file = e.target.files[0]
+                      if (file) setPlantaFile(file)
+                    }}
+                    className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  />
+                  <span className="text-xs text-aco-300">Escolher arquivo PDF ou imagem da planta baixa</span>
+                </div>
+              )}
+
+              {!plantaFile && (
                 <input
-                  type="file"
-                  accept="application/pdf, image/png, image/jpeg, image/jpg"
-                  onChange={e => {
-                    const file = e.target.files[0]
-                    if (file) setPlantaFile(file)
-                  }}
-                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                  value={form.planta_url}
+                  onChange={e => set('planta_url', e.target.value)}
+                  disabled={uploading || salvando}
+                  placeholder="Ou cole uma URL ex: https://pub-xxx.r2.dev/planta.pdf"
+                  className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2 text-xs text-aco-200 mt-2 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
                 />
-                <span className="text-xs text-aco-300">Escolher arquivo PDF ou imagem da planta baixa</span>
-              </div>
-            )}
-            
-            {!plantaFile && (
-              <input
-                value={form.planta_url}
-                onChange={e => set('planta_url', e.target.value)}
-                disabled={uploading || salvando}
-                placeholder="Ou cole uma URL ex: https://pub-xxx.r2.dev/planta.pdf"
-                className="w-full bg-concreto-800 border border-concreto-700 rounded-lg px-3 py-2 text-xs text-aco-200 mt-2 placeholder-aco-400 focus:outline-none focus:border-sinal-500 transition-colors disabled:opacity-55"
-              />
-            )}
-          </Field>
+              )}
+            </Field>
+          )}
 
           {/* Ancoragem antecipada: marca o ponto de partida na planta ja no upload */}
           {plantaPreviewUrl && (

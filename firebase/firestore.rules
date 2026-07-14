@@ -6,5 +6,15 @@ service cloud.firestore {
     match /visitas/{visitaId} {
       allow read, write: if true;
     }
+
+    // Obras (projetos) e Locais (pavimentos/ambientes dentro de uma obra) -
+    // mesmas regras abertas de /visitas, adicionadas em 2026-07-14 junto com
+    // o seletor de projeto/aba de locais.
+    match /obras/{obraId} {
+      allow read, write: if true;
+    }
+    match /locais/{localId} {
+      allow read, write: if true;
+    }
   }
 }
