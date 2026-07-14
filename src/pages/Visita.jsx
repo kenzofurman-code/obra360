@@ -43,6 +43,15 @@ export default function Visita() {
   // em t=0 sem precisar editar o video manualmente. So tem efeito no PROXIMO
   // reprocessamento (worker.py), nao no viewer.
   const [corteInicial, setCorteInicial] = useState(0)
+  // Ajustes finos do overlay 3D na foto 360 (PanoramaViewer/Player360) - diferentes do
+  // pathScale/headingOffset 2D (que so afetam o mapa/planta). Existem porque as fotos
+  // extraidas pelo worker podem nao preservar a mesma referencia de escala/rotacao que
+  // o video original tinha (ver comentario em PanoramaViewer.jsx::atualizarPassarela).
+  const [ribbonScale, setRibbonScale] = useState(1.0)
+  const [ribbonRotation, setRibbonRotation] = useState(0)
+  // Ajuste do cone de FOV relativo ao frame/foto atual (independente do headingOffset,
+  // que gira o mapa inteiro) - ver comentario em PlantaViewer.jsx.
+  const [coneFrameOffset, setConeFrameOffset] = useState(0)
   // Altura/largura da pagina do PDF da planta (salvo pelo worker.py via pdf_extractor.
   // get_page_aspect) - sem isso a rotacao/escala distorce a trajetoria em paginas
   // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
@@ -282,6 +291,9 @@ export default function Visita() {
       setPathScale(v.path_scale ?? 0.50)
       setEspelharCaminho(v.espelhar_caminho ?? false)
       setCorteInicial(v.corte_inicial_seg ?? 0)
+      setRibbonScale(v.passarela_escala ?? 1.0)
+      setRibbonRotation(v.passarela_rotacao ?? 0)
+      setConeFrameOffset(v.cone_frame_offset ?? 0)
       setPlantaAspecto(v.planta_aspecto ?? 1.0)
     })
   }, [id, navigate])
@@ -439,6 +451,9 @@ export default function Visita() {
         path_scale: pathScale,
         espelhar_caminho: espelharCaminho,
         corte_inicial_seg: corteInicial,
+        passarela_escala: ribbonScale,
+        passarela_rotacao: ribbonRotation,
+        cone_frame_offset: coneFrameOffset,
       })
       mostrarToast('Alterações salvas com sucesso!')
     } catch (e) {
@@ -587,6 +602,8 @@ export default function Visita() {
               lineOpacity={lineOpacity}
               lineThickness={lineThickness}
               espelharCaminho={espelharCaminho}
+              ribbonScale={ribbonScale}
+              ribbonRotationOffset={ribbonRotation}
             />
           ) : (
             <Player360
@@ -599,6 +616,8 @@ export default function Visita() {
               lineOpacity={lineOpacity}
               lineThickness={lineThickness}
               espelharCaminho={espelharCaminho}
+              ribbonScale={ribbonScale}
+              ribbonRotationOffset={ribbonRotation}
             />
           )}
         </div>
@@ -787,6 +806,7 @@ export default function Visita() {
                 ancora2={ancora2}
                 visitaSobreposta={visitaSobreposta}
                 espelharCaminho={espelharCaminho}
+                coneFrameOffset={coneFrameOffset}
                 onUpdateWaypointPosition={atualizarPosicaoWaypoint}
               />
             </div>
@@ -1012,6 +1032,111 @@ export default function Visita() {
                   </div>
                   <p className="text-[9px] text-aco-400 leading-normal font-mono">
                     Segundos a descartar do início do vídeo (ex.: tempo parado posicionando a câmera). Só faz efeito no próximo reprocessamento pelo worker.
+                  </p>
+                </div>
+
+                {/* Escala da Passarela na Foto 360° - diferente do "Tamanho do Caminho"
+                    acima (que é só o mapa 2D). Ajusta o overlay 3D dentro da própria foto. */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Escala da Passarela (na Foto 360°)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="1"
+                        max="300"
+                        step="1"
+                        value={(ribbonScale * 100).toFixed(0)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          if (!Number.isNaN(v) && v > 0) setRibbonScale(v / 100)
+                        }}
+                        className="w-14 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">%</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="1"
+                    max="300"
+                    step="1"
+                    value={ribbonScale * 100}
+                    onChange={e => setRibbonScale(parseFloat(e.target.value) / 100)}
+                    className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                  />
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Tamanho da fita azul projetada sobre a própria foto 360° (100% = tamanho original).
+                  </p>
+                </div>
+
+                {/* Rotação da Passarela na Foto 360° - gira o overlay 3D em torno do
+                    ponto atual, sem afetar a planta 2D nem o mapa. */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Rotação da Passarela (na Foto 360°)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="-180"
+                        max="180"
+                        step="0.1"
+                        value={ribbonRotation.toFixed(1)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          if (!Number.isNaN(v)) setRibbonRotation(Math.max(-180, Math.min(180, v)))
+                        }}
+                        className="w-16 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">°</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="-180"
+                    max="180"
+                    step="0.1"
+                    value={ribbonRotation}
+                    onChange={e => setRibbonRotation(parseFloat(e.target.value))}
+                    className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                  />
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Gira a fita azul em relação ao ponto onde a câmera está agora, caso ela apareça torta em relação à foto.
+                  </p>
+                </div>
+
+                {/* Ajuste do Cone relativo ao Frame - corrige residuo de desalinhamento
+                    entre o cone azul (FOV) e a foto atual, sem mexer na bussola geral. */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Ajuste do Cone (relativo ao Frame)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="-180"
+                        max="180"
+                        step="0.1"
+                        value={coneFrameOffset.toFixed(1)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          if (!Number.isNaN(v)) setConeFrameOffset(Math.max(-180, Math.min(180, v)))
+                        }}
+                        className="w-16 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">°</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="-180"
+                    max="180"
+                    step="0.1"
+                    value={coneFrameOffset}
+                    onChange={e => setConeFrameOffset(parseFloat(e.target.value))}
+                    className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                  />
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Ajuste fino do cone azul de visão no mapa, independente da bússola (Alinhamento Norte) acima.
                   </p>
                 </div>
             </>

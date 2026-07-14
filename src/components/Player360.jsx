@@ -47,6 +47,8 @@ export default function Player360({
   lineOpacity = 80,
   lineThickness = 1.0,
   espelharCaminho = false,
+  ribbonScale = 1.0,
+  ribbonRotationOffset = 0,
 }) {
   const videoRef = useRef(null)
   const playerRef = useRef(null)
@@ -65,6 +67,8 @@ export default function Player360({
   const lineOpacityRef = useRef(lineOpacity)
   const lineThicknessRef = useRef(lineThickness)
   const espelharCaminhoRef = useRef(espelharCaminho)
+  const ribbonScaleRef = useRef(ribbonScale)
+  const ribbonRotationRef = useRef(ribbonRotationOffset)
 
   // Sincroniza props com as refs
   useEffect(() => { waypointsRef.current = waypoints }, [waypoints])
@@ -72,6 +76,8 @@ export default function Player360({
   useEffect(() => { lineOpacityRef.current = lineOpacity }, [lineOpacity])
   useEffect(() => { lineThicknessRef.current = lineThickness }, [lineThickness])
   useEffect(() => { espelharCaminhoRef.current = espelharCaminho }, [espelharCaminho])
+  useEffect(() => { ribbonScaleRef.current = ribbonScale }, [ribbonScale])
+  useEffect(() => { ribbonRotationRef.current = ribbonRotationOffset }, [ribbonRotationOffset])
 
   // Inicialização do Player
   useEffect(() => {
@@ -187,20 +193,26 @@ export default function Player360({
             const yc = renderPosRef.current.y
             
             // A passarela 3D é desenhada diretamente no espaço de coordenadas do vídeo (video space).
-            // Como a odometria visual (Python) foi gerada a partir deste exato vídeo, o alinhamento 3D
-            // entre o trajeto e o vídeo é nativo (ângulo 0). A bússola (headingOffset) serve apenas
-            // para orientar o trajeto 2D na planta baixa física.
-            const alpha = 0.0
-            const cos = 1.0
-            const sin = 0.0
+            // Por padrão o alinhamento 3D é nativo (ângulo 0, ribbonRotationOffset=0) já que a
+            // odometria visual e o vídeo vem da mesma gravação; ribbonRotationOffset existe como
+            // ajuste manual pra casos excepcionais. A bússola (headingOffset) serve apenas para
+            // orientar o trajeto 2D na planta baixa física.
 
             // 1. Gera os pontos centrais 3D
             const sorted = [...currentWaypoints].sort((a, b) => a.t - b.t)
             const pathPoints = sorted.map(wp => {
-              const rawDx = (wp.x - xc) * 22
-              const dx = espelharCaminhoRef.current ? -rawDx : rawDx
-              const dy = (wp.y - yc) * 22
-              
+              const escala = 22 * ribbonScaleRef.current
+              const rawDx = (wp.x - xc) * escala
+              const dx0 = espelharCaminhoRef.current ? -rawDx : rawDx
+              const dy0 = (wp.y - yc) * escala
+
+              // Ajuste manual de rotacao (por padrao 0 - o video real e a trajetoria
+              // vem da mesma gravacao, entao alinham nativamente; so usar se precisar
+              // corrigir algum caso excepcional).
+              const rad = (ribbonRotationRef.current * Math.PI) / 180
+              const dx = dx0 * Math.cos(rad) - dy0 * Math.sin(rad)
+              const dy = dx0 * Math.sin(rad) + dy0 * Math.cos(rad)
+
               // No espaço 3D do vídeo, X é horizontal (rx = dx)
               // E a câmera olha para a direção Z negativa. Logo, andar para frente (+dy)
               // deve nos mover para frente no espaço 3D (Z negativo: rz = -dy)

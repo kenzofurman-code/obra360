@@ -114,6 +114,8 @@ export default function PanoramaViewer({
   lineOpacity = 80,
   lineThickness = 1.0,
   espelharCaminho = false,
+  ribbonScale = 1.0, // multiplica o fator de escala base (22) da passarela 3D
+  ribbonRotationOffset = 0, // graus - gira a passarela 3D em torno do ponto atual antes de desenhar
 }) {
   const containerRef = useRef(null)
   const fakePlayerRef = useRef(null)
@@ -126,10 +128,14 @@ export default function PanoramaViewer({
   const lineOpacityRef = useRef(lineOpacity)
   const lineThicknessRef = useRef(lineThickness)
   const espelharCaminhoRef = useRef(espelharCaminho)
+  const ribbonScaleRef = useRef(ribbonScale)
+  const ribbonRotationRef = useRef(ribbonRotationOffset)
   useEffect(() => { waypointsRef.current = waypoints }, [waypoints])
   useEffect(() => { lineOpacityRef.current = lineOpacity }, [lineOpacity])
   useEffect(() => { lineThicknessRef.current = lineThickness }, [lineThickness])
   useEffect(() => { espelharCaminhoRef.current = espelharCaminho }, [espelharCaminho])
+  useEffect(() => { ribbonScaleRef.current = ribbonScale }, [ribbonScale])
+  useEffect(() => { ribbonRotationRef.current = ribbonRotationOffset }, [ribbonRotationOffset])
   // headingOffset mantido na assinatura por paridade com Player360 (orienta a planta 2D,
   // não o vídeo/panorama - ver comentário equivalente em Player360.jsx)
   void headingOffset
@@ -390,9 +396,18 @@ export default function PanoramaViewer({
         .sort((a, b) => a.t - b.t)
       if (sorted.length < 2) return
       const pathPoints = sorted.map((wp) => {
-        const rawDx = (wp.x - xc) * 22
-        const dx = espelharCaminhoRef.current ? -rawDx : rawDx
-        const dy = (wp.y - yc) * 22
+        const escala = 22 * ribbonScaleRef.current
+        const rawDx = (wp.x - xc) * escala
+        const dx0 = espelharCaminhoRef.current ? -rawDx : rawDx
+        const dy0 = (wp.y - yc) * escala
+        // Rotacao manual da passarela em torno do ponto atual (xc,yc) - o ideal seria
+        // sair alinhada em angulo 0 (mesma logica do Player360.jsx: trajetoria e foto
+        // vem da mesma gravacao), mas na pratica as fotos extraidas pelo gerar_quadros.py
+        // podem nao preservar a mesma referencia de "frente" que o video original tinha,
+        // entao expomos esse ajuste manual em vez de assumir alpha=0 como o Player360.
+        const rad = THREE.MathUtils.degToRad(ribbonRotationRef.current)
+        const dx = dx0 * Math.cos(rad) - dy0 * Math.sin(rad)
+        const dy = dx0 * Math.sin(rad) + dy0 * Math.cos(rad)
         const rx = dx
         const rz = -dy
         const ry = -2.1

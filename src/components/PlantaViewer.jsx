@@ -26,6 +26,8 @@ export default function PlantaViewer({
   ancora2,
   visitaSobreposta = null, // { planta_url, ancora1, ancora2 }
   espelharCaminho = false,
+  coneFrameOffset = 0, // graus - ajuste manual da direcao do cone relativo ao frame/foto,
+                        // independente do headingOffset (que orienta o mapa todo)
 }) {
   const canvasRef = useRef(null)
   const imgRef = useRef(null)
@@ -260,8 +262,13 @@ export default function PlantaViewer({
       // NOTA: para o cone FOV usamos o sinal OPOSTO do espelhamento porque o
       // yaw da câmera já está no espaço absoluto do mundo (não precisa ser espelhado junto com a trajetória)
       const theta = ((headingOffset + 180) * Math.PI) / 180
-      const dx = espelharCaminho ? Math.sin(yaw) : -Math.sin(yaw)
-      const dy = -Math.cos(yaw)
+      // coneFrameOffset: ajuste manual adicional (independente da bussola/headingOffset,
+      // que gira o mapa inteiro) pra corrigir residuos de desalinhamento entre o cone e
+      // o frame/foto atual - ex.: se cada foto extraida nao guarda exatamente a mesma
+      // referencia de "frente" que o PanoramaViewer assume.
+      const yawAjustado = yaw + (coneFrameOffset * Math.PI) / 180
+      const dx = espelharCaminho ? Math.sin(yawAjustado) : -Math.sin(yawAjustado)
+      const dy = -Math.cos(yawAjustado)
 
       // Vetor de visão rotacionado pela bússola (no espaço do canvas)
       const rx = dx * Math.cos(theta) - dy * Math.sin(theta)
@@ -386,7 +393,7 @@ export default function PlantaViewer({
       ctx.textAlign = 'center'
       ctx.fillText('B', cx, cy + 3)
     }
-  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho, toCanvasPixels])
+  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho, toCanvasPixels, coneFrameOffset])
 
   // Reanima continuamente
   useEffect(() => {
