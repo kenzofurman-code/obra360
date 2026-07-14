@@ -57,6 +57,10 @@ export default function Visita() {
   // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
   // no processar_vistoria.py.
   const [plantaAspecto, setPlantaAspecto] = useState(1.0)
+  // Selo de qualidade da calibracao automatica por portas (ver calibrar_por_portas
+  // em processar_vistoria.py/worker.py) - { usado_auto, n_portas, residual_val, motivo }.
+  // So' existe depois de pelo menos um reprocessamento pelo worker; null antes disso.
+  const [seloQualidade, setSeloQualidade] = useState(null)
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
   const [listaVisitas, setListaVisitas] = useState([])
@@ -295,6 +299,7 @@ export default function Visita() {
       setRibbonRotation(v.passarela_rotacao ?? 0)
       setConeFrameOffset(v.cone_frame_offset ?? 0)
       setPlantaAspecto(v.planta_aspecto ?? 1.0)
+      setSeloQualidade(v.selo_qualidade ?? null)
     })
   }, [id, navigate])
 
@@ -1007,6 +1012,36 @@ export default function Visita() {
                     <div className="w-9 h-5 bg-concreto-800 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-aco-200 after:border-concreto-700 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-sinal-500 peer-checked:after:bg-concreto-950"></div>
                   </label>
                 </div>
+
+                {/* Selo de qualidade da calibracao automatica por portas (ver
+                    calibrar_por_portas em processar_vistoria.py/worker.py) - so'
+                    aparece depois do primeiro reprocessamento pelo worker. Puramente
+                    informativo (nao tem controle nenhum pro usuario mexer aqui). */}
+                {seloQualidade && (
+                  <div className={`rounded-lg p-3 flex flex-col gap-1 shrink-0 font-mono text-xs border ${
+                    seloQualidade.usado_auto
+                      ? 'bg-sinal-500/10 border-sinal-500/30 text-sinal-400'
+                      : 'bg-alerta/10 border-alerta/30 text-alerta'
+                  }`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-sm leading-none">{seloQualidade.usado_auto ? '✓' : '⚠'}</span>
+                      <span className="font-medium text-[11px]">
+                        {seloQualidade.usado_auto
+                          ? 'Calibração automática validada'
+                          : 'Calibração automática não aplicada'}
+                      </span>
+                    </div>
+                    <p className="text-[9px] leading-normal opacity-80">
+                      {seloQualidade.usado_auto
+                        ? `${seloQualidade.n_portas} porta(s) usada(s) como referência, resíduo de validação ${(seloQualidade.residual_val * 100).toFixed(2)}% da planta.`
+                        : `${seloQualidade.motivo || 'Motivo não informado.'}${
+                            seloQualidade.n_portas != null
+                              ? ` (${seloQualidade.n_portas} porta(s), resíduo ${(seloQualidade.residual_val * 100).toFixed(2)}%)`
+                              : ''
+                          } Usando âncora/bússola/escala manuais.`}
+                    </p>
+                  </div>
+                )}
 
                 {/* Corte do inicio do video (tempo parado posicionando a camera) -
                     lido pelo worker.py no PROXIMO reprocessamento; nao afeta o

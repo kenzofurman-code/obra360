@@ -715,6 +715,11 @@ def main():
         'path_scale': calibracao['path_scale'],
         'espelhar_caminho': calibracao['espelhar_caminho'],
         'ambientes': ambientes,
+        # Selo de qualidade: se a calibracao automatica por portas (Umeyama,
+        # ver calibrar_por_portas) foi adotada ou nao nesse processamento, e
+        # com que confianca (n_portas/residual_val) - o site usa isso pra
+        # mostrar um badge (ver Visita.jsx).
+        'selo_qualidade': calibracao['info'],
     })
 
     print(f"\n[OK] Pipeline concluido com sucesso!")

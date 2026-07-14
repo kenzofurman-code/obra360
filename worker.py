@@ -301,7 +301,11 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
                  'heading_offset': calibracao['heading_offset'],
                  'path_scale': calibracao['path_scale'],
                  'espelhar_caminho': calibracao['espelhar_caminho'],
-                 'ambientes': ambientes}
+                 'ambientes': ambientes,
+                 # Selo de qualidade (ver mesmo campo em processar_vistoria.py) -
+                 # indica se a calibracao automatica por portas foi confiavel
+                 # o bastante pra ser adotada nesse processamento.
+                 'selo_qualidade': calibracao['info']}
         r2_public_url = os.environ.get('R2_PUBLIC_URL')
         if manifest_path and r2_public_url:
             dados['manifest_url'] = f"{r2_public_url}/{visita_id}/manifest.json"
