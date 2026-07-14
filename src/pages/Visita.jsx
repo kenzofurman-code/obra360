@@ -880,15 +880,34 @@ export default function Visita() {
             <div className={`bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0 ${ancora1 && ancora2 ? 'opacity-40 pointer-events-none' : ''}`}>
               <div className="flex justify-between items-center text-xs font-mono">
                 <span className="text-aco-300 font-medium text-[11px]">Bússola (Alinhamento Norte)</span>
-                <span className="text-sinal-400 font-bold bg-sinal-500/10 px-2 py-0.5 rounded text-[10px] border border-sinal-500/10">{headingOffset}°</span>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="-180"
+                    max="180"
+                    step="0.1"
+                    disabled={!!(ancora1 && ancora2)}
+                    value={headingOffset.toFixed(1)}
+                    onChange={e => {
+                      const v = parseFloat(e.target.value)
+                      if (!Number.isNaN(v)) setHeadingOffset(Math.max(-180, Math.min(180, v)))
+                    }}
+                    className="w-16 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                  />
+                  <span className="text-sinal-400 font-bold text-[10px]">°</span>
+                </div>
               </div>
+              {/* step fino (0.1°) - mesma razao do slider de escala: valores bons
+                  costumam cair fora de numeros inteiros (ex.: -13.4°) e o passo de
+                  1 em 1 grau nao dava precisao suficiente pra alinhar os corredores */}
               <input
                 type="range"
                 min="-180"
                 max="180"
+                step="0.1"
                 disabled={!!(ancora1 && ancora2)}
                 value={headingOffset}
-                onChange={e => setHeadingOffset(parseInt(e.target.value))}
+                onChange={e => setHeadingOffset(parseFloat(e.target.value))}
                 className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
               />
               {ancora1 && ancora2 ? (

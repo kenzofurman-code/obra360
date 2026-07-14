@@ -189,6 +189,17 @@ export default function PanoramaViewer({
     const matB = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false })
     const sphereA = new THREE.Mesh(geometry, matA)
     const sphereB = new THREE.Mesh(geometry, matB)
+    // renderOrder EXPLICITO (nao confiar no sort automatico do three.js aqui): a
+    // camera fica sempre no centro exato das esferas (raio 500), entao a distancia
+    // camera->centro-da-esfera usada pelo sort de transparencia da ~0 - o three.js
+    // interpreta isso como "objeto mais proximo" e pode desenhar a esfera DEPOIS da
+    // passarela (que fica a ~dezenas de unidades, nao 500), cobrindo-a por cima na
+    // maior parte do tempo. So aparecia de relance durante o crossfade porque as
+    // esferas ficavam parcialmente transparentes (opacity<1) e deixavam a passarela
+    // (desenhada por baixo) vazar. renderOrder tem prioridade sobre esse sort por
+    // distancia, entao forcamos aqui: esferas primeiro, passarela por cima sempre.
+    sphereA.renderOrder = 0
+    sphereB.renderOrder = 0
     scene.add(sphereA)
     scene.add(sphereB)
 
@@ -364,6 +375,9 @@ export default function PanoramaViewer({
         // ruim), o bounding sphere fica inválido e o three.js corta (culling) a fita da
         // frustum silenciosamente, sem erro. Desliga o culling pra ela nunca "sumir" assim.
         line3D.frustumCulled = false
+        // renderOrder maior que as esferas (0) - garante que a passarela sempre
+        // desenha por cima delas (ver nota em sphereA/sphereB acima).
+        line3D.renderOrder = 1
         scene.add(line3D)
       }
 
@@ -427,7 +441,16 @@ export default function PanoramaViewer({
 
       const latClamped = Math.max(-85, Math.min(85, lat))
       const phi = THREE.MathUtils.degToRad(90 - latClamped)
-      const theta = THREE.MathUtils.degToRad(lon)
+      // -90 no theta: com lon=0 (posicao inicial, sem arrastar o mouse), essa
+      // formula sozinha aponta a camera para +X (dir=(1,0,0)), mas o cone de FOV
+      // no PlantaViewer.jsx (getCameraYaw -> atan2(dir.x, -dir.z)) assume que
+      // yaw=0 e' a direcao -Z. Sem esse ajuste, TODA vistoria com PanoramaViewer
+      // (fotos) tem o cone desenhado 90 graus girado em relacao ao que a camera
+      // realmente mostra - era exatamente o defasamento que o Pedro notou. O
+      // Player360.jsx antigo (video.js/videojs-vr) nao tinha esse bug porque o
+      // getCameraYaw foi calibrado contra a convencao INTERNA do plugin de VR
+      // dele, que ja usava -Z como padrao.
+      const theta = THREE.MathUtils.degToRad(lon - 90)
       const target = new THREE.Vector3(
         500 * Math.sin(phi) * Math.cos(theta),
         500 * Math.cos(phi),
