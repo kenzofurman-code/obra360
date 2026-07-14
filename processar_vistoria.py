@@ -592,6 +592,26 @@ def run_map_matching(raw_waypoints: list, vaos: list,
 
 # ─── Main ───────────────────────────────────────────────────────────────────
 
+def subir_json_r2(dados_dict, chave):
+    """Sobe um JSON (ex.: trajetoria corrigida) pro R2 - mesmo helper de
+    worker.py::subir_json_r2, ver comentario la sobre o motivo (limite de 1MB
+    por documento do Firestore). Retorna True se subiu, False se R2 nao
+    estiver configurado no .env (chamador decide o fallback)."""
+    bucket = os.environ.get('R2_BUCKET_NAME')
+    account = os.environ.get('R2_ACCOUNT_ID')
+    key = os.environ.get('R2_ACCESS_KEY_ID')
+    secret = os.environ.get('R2_SECRET_ACCESS_KEY')
+    if not (bucket and account and key and secret):
+        return False
+    import boto3
+    s3 = boto3.client('s3', aws_access_key_id=key, aws_secret_access_key=secret,
+                       endpoint_url=f'https://{account}.r2.cloudflarestorage.com',
+                       region_name='auto')
+    corpo = json.dumps(dados_dict).encode('utf-8')
+    s3.put_object(Bucket=bucket, Key=chave, Body=corpo, ContentType='application/json')
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Pipeline automatizado Obra360: vídeo 360 + planta PDF → trajetória corrigida no Firebase.')
@@ -706,8 +726,7 @@ def main():
     # multiplas portas - ver calibrar_por_portas) pra o site re-exibir com os
     # mesmos valores, e o inventario de ambientes (nome+area, mesmo sem foto
     # associada) pra uso futuro de progresso por comodo/pavimento/obra.
-    firebase_client.atualizar_campos(args.id, {
-        'waypoints': waypoints_corrigidos,
+    dados_finais = {
         'status': 'processado',
         'planta_aspecto': aspecto,
         'ancora1': calibracao['ancora1'],
@@ -720,7 +739,28 @@ def main():
         # com que confianca (n_portas/residual_val) - o site usa isso pra
         # mostrar um badge (ver Visita.jsx).
         'selo_qualidade': calibracao['info'],
-    })
+    }
+    # 'waypoints' NAO vai mais direto no documento - trajetorias longas (SLAM)
+    # passam facil de 1MB, limite RIGIDO por documento do Firestore (ver
+    # mesmo comentario/motivo em worker.py::processar_visita, confirmado numa
+    # vistoria real 2026-07-14 com 16515 poses = doc de 1.057.381 bytes,
+    # recusado pelo Firestore). Sobe pro R2 (mesmo bucket dos panoramas) e
+    # grava so' a URL; Visita.jsx busca via fetch() quando 'waypoints_url'
+    # existir, com fallback pro campo 'waypoints' inline (vistorias antigas/curtas).
+    r2_public_url = os.environ.get('R2_PUBLIC_URL')
+    waypoints_key = f"{args.id}/waypoints_corrigidos.json"
+    if r2_public_url and subir_json_r2(waypoints_corrigidos, waypoints_key):
+        dados_finais['waypoints_url'] = f"{r2_public_url}/{waypoints_key}"
+    else:
+        tamanho_estimado = len(json.dumps(waypoints_corrigidos).encode('utf-8'))
+        if tamanho_estimado < 700_000:
+            dados_finais['waypoints'] = waypoints_corrigidos
+        else:
+            print(f"[ERRO] Trajetoria tem ~{tamanho_estimado} bytes - nao caberia com folga "
+                  "no limite de 1MB por documento do Firestore, e R2_BUCKET_NAME/R2_PUBLIC_URL "
+                  "nao estao configuradas no .env pra subir como arquivo separado.")
+            sys.exit(1)
+    firebase_client.atualizar_campos(args.id, dados_finais)
 
     print(f"\n[OK] Pipeline concluido com sucesso!")
     print(f"   Vistoria ID: {args.id}")

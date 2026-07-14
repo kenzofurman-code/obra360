@@ -287,7 +287,22 @@ export default function Visita() {
     getVisita(id).then(v => {
       if (!v) { navigate('/'); return }
       setVisita(v)
-      setWaypoints(v.waypoints || [])
+      // 'waypoints' pode ter sido movido pro R2 (waypoints_url) em vez de
+      // ficar inline no documento - trajetorias longas (SLAM) passam do
+      // limite de 1MB por documento do Firestore (ver worker.py/
+      // processar_vistoria.py, 2026-07-14). Busca do R2 quando essa URL
+      // existir; senao usa o campo antigo (vistorias curtas/antigas).
+      if (v.waypoints_url) {
+        fetch(v.waypoints_url)
+          .then(r => r.json())
+          .then(wps => setWaypoints(wps || []))
+          .catch(err => {
+            console.error('Falha ao buscar waypoints_url:', err)
+            setWaypoints(v.waypoints || [])
+          })
+      } else {
+        setWaypoints(v.waypoints || [])
+      }
       setHeadingOffset(v.heading_offset || 0)
       setAncora1(v.ancora1 || null)
       setAncora2(v.ancora2 || null)
@@ -448,8 +463,7 @@ export default function Visita() {
     }
     setSalvando(true)
     try {
-      await atualizarVisita(id, {
-        waypoints,
+      const payload = {
         heading_offset: headingOffset,
         ancora1,
         ancora2,
@@ -459,8 +473,26 @@ export default function Visita() {
         passarela_escala: ribbonScale,
         passarela_rotacao: ribbonRotation,
         cone_frame_offset: coneFrameOffset,
-      })
-      mostrarToast('Alterações salvas com sucesso!')
+      }
+      // Documento do Firestore tem limite RIGIDO de 1MB - trajetorias longas
+      // (SLAM, ex.: vistoria de 2026-07-14 com 16515 pontos) estouram esse
+      // limite sozinhas. O worker.py/processar_vistoria.py ja sobem essas
+      // trajetorias pro R2 (waypoints_url) em vez de gravar inline - aqui no
+      // site ainda nao ha' upload pro R2 (precisaria de URL pre-assinada),
+      // entao por enquanto so' protegemos o botao Salvar pra nao quebrar:
+      // se 'waypoints' estiver grande demais, avisa e salva so' o resto
+      // (heading/ancora/escala etc.), sem perder essas mudancas.
+      const tamanhoEstimado = new Blob([JSON.stringify(waypoints)]).size
+      if (tamanhoEstimado < 700_000) {
+        payload.waypoints = waypoints
+      } else {
+        mostrarToast(
+          `Trajetória tem ~${(tamanhoEstimado / 1e6).toFixed(1)}MB - grande demais para o ` +
+          'limite de 1MB do Firestore. Salvando as outras alterações (âncora, heading, escala...) ' +
+          'sem alterar a trajetória.', 'erro')
+      }
+      await atualizarVisita(id, payload)
+      if (tamanhoEstimado < 700_000) mostrarToast('Alterações salvas com sucesso!')
     } catch (e) {
       mostrarToast('Erro ao salvar no banco', 'erro')
     } finally {
