@@ -875,16 +875,17 @@ export default function Visita() {
               </button>
             </div>
 
-            {/* Bloco de sliders/config, com rolagem PROPRIA (min-h-0 sem flex-1 -
-                pode encolher e rolar quando nao couber) - assim ele nunca rouba
-                espaco do Editor de Waypoints logo abaixo (flex-1: sempre recebe
-                o que sobrar, garantido, e' onde fica o seletor de "Sobreposicao
-                de Plantas" e o botao Salvar). Tentativa anterior colocava o
-                overflow-y-auto no drawer INTEIRO - isso fazia o flex-1 do editor
-                de waypoints colapsar pra altura zero (CSS: overflow no ancestral
-                de um flex-1/min-h-0 pode zerar o espaco distribuido pra ele),
-                sumindo o seletor de vistoria e o botao Salvar da tela. */}
-            <div className="min-h-0 overflow-y-auto flex flex-col gap-4 pr-1 -mr-1">
+            {/* Bloco de sliders/config, com rolagem PROPRIA e ALTURA MAXIMA FIXA
+                (max-h, nao mais flex-shrink automatico). Tentativa anterior usava
+                so' min-h-0 sem flex-1 esperando que o navegador encolhesse esse
+                bloco sozinho quando faltasse espaco - na pratica isso NAO
+                aconteceu (confirmado pelo Pedro, 2026-07-15): o bloco crescia
+                pro tamanho natural do conteudo e empurrava o Editor de Waypoints
+                (com o seletor de "Sobreposicao de Plantas" e o botao Salvar) pra
+                fora da tela, sem chance de rolar ate ele. Com max-h-[48vh] fixo,
+                esse bloco NUNCA passa de ~48% da altura da tela - sobra sempre
+                espaco garantido pro flex-1 do Editor de Waypoints abaixo. */}
+            <div className="shrink-0 max-h-[48vh] overflow-y-auto flex flex-col gap-4 pr-1 -mr-1">
 
             {/* Banner de status de processamento automático */}
             {visita.status === 'processado' && (
