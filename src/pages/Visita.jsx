@@ -6,7 +6,7 @@ import PanoramaViewer from '../components/PanoramaViewer'
 import PlantaViewer from '../components/PlantaViewer'
 import WaypointEditor from '../components/WaypointEditor'
 import { useVideoSync } from '../hooks/useVideoSync'
-import { getVisita, atualizarVisita, listarVisitas } from '../lib/visitas'
+import { getVisita, atualizarVisita, listarVisitas, listarVisitasDoLocal } from '../lib/visitas'
 
 export default function Visita() {
   const { id } = useParams()
@@ -64,6 +64,11 @@ export default function Visita() {
   const [visitaSobrepostaId, setVisitaSobrepostaId] = useState(null)
   const [visitaSobreposta, setVisitaSobreposta] = useState(null)
   const [listaVisitas, setListaVisitas] = useState([])
+
+  // Histórico de vistorias do MESMO local (item 4.5 do roadmap) - botão
+  // "Histórico" no canto superior direito, abaixo do Painel de Controle.
+  const [historicoAberto, setHistoricoAberto] = useState(false)
+  const [historicoVisitas, setHistoricoVisitas] = useState([])
 
   // Estados para trajetória rápida
   const [modoTrajetoriaRapida, setModoTrajetoriaRapida] = useState(false)
@@ -265,6 +270,15 @@ export default function Visita() {
       setListaVisitas(vList.filter(v => v.id !== id))
     })
   }, [id])
+
+  // Histórico: vistorias do MESMO local (mais recente primeiro), pro botão
+  // "Histórico" no visualizador - so' carrega quando a vistoria tem local_id
+  // (vistorias antigas, de antes da hierarquia obras/locais de 2026-07-14,
+  // nao tem esse campo - o botão fica desabilitado nesse caso, ver JSX).
+  useEffect(() => {
+    if (!visita?.local_id) { setHistoricoVisitas([]); return }
+    listarVisitasDoLocal(visita.local_id).then(setHistoricoVisitas)
+  }, [visita?.local_id])
 
   // Carrega dados da visita principal ou inicializa em modo demonstração
   useEffect(() => {
@@ -850,14 +864,56 @@ export default function Visita() {
           </div>
         )}
 
-        {/* BOTÃO FLUTUANTE PARA CONFIGURAÇÕES / DRAWER */}
+        {/* BOTÕES FLUTUANTES: CONFIGURAÇÕES / DRAWER + HISTÓRICO (item 4.5) */}
         {!menuAberto && (
-          <button
-            onClick={() => setMenuAberto(true)}
-            className="absolute top-4 right-4 z-10 bg-concreto-900/90 backdrop-blur border border-concreto-700/80 hover:border-sinal-500/50 text-aco-200 hover:text-sinal-400 px-4 py-2.5 rounded-lg font-mono text-xs shadow-xl transition-all active:scale-[0.97]"
-          >
-            ⚙️ Painel de Controle
-          </button>
+          <div className="absolute top-4 right-4 z-10 flex flex-col items-end gap-2">
+            <button
+              onClick={() => setMenuAberto(true)}
+              className="bg-concreto-900/90 backdrop-blur border border-concreto-700/80 hover:border-sinal-500/50 text-aco-200 hover:text-sinal-400 px-4 py-2.5 rounded-lg font-mono text-xs shadow-xl transition-all active:scale-[0.97]"
+            >
+              ⚙️ Painel de Controle
+            </button>
+
+            <button
+              onClick={() => setHistoricoAberto(v => !v)}
+              disabled={!visita?.local_id}
+              title={!visita?.local_id ? 'Vistoria antiga - sem local vinculado, histórico indisponível' : ''}
+              className="bg-concreto-900/90 backdrop-blur border border-concreto-700/80 hover:border-sinal-500/50 disabled:opacity-40 disabled:hover:border-concreto-700/80 text-aco-200 hover:text-sinal-400 px-4 py-2.5 rounded-lg font-mono text-xs shadow-xl transition-all active:scale-[0.97]"
+            >
+              🕐 Histórico
+            </button>
+
+            {historicoAberto && (
+              <div className="w-72 max-h-[60vh] overflow-y-auto bg-concreto-900/95 backdrop-blur-md border border-concreto-700/80 rounded-lg shadow-2xl p-2">
+                <p className="font-mono text-[10px] text-aco-400 uppercase tracking-wider px-2 py-1.5 border-b border-concreto-800/80 mb-1">
+                  Histórico de vistorias
+                </p>
+                {historicoVisitas.length === 0 && (
+                  <p className="font-mono text-[11px] text-aco-400 px-2 py-3">
+                    Nenhuma outra vistoria registrada neste local ainda.
+                  </p>
+                )}
+                {historicoVisitas.map(v => {
+                  const data = v.data_vistoria?.toDate?.() ?? new Date(v.data_vistoria ?? 0)
+                  const atual = v.id === visita.id
+                  return (
+                    <button
+                      key={v.id}
+                      onClick={() => { setHistoricoAberto(false); if (!atual) navigate(`/visita/${v.id}`) }}
+                      className={`w-full text-left px-2.5 py-2 rounded-md font-mono text-xs transition-colors flex items-center justify-between gap-2 ${
+                        atual
+                          ? 'bg-sinal-500/10 text-sinal-400 cursor-default'
+                          : 'text-aco-200 hover:bg-concreto-800/70 hover:text-sinal-400'
+                      }`}
+                    >
+                      <span>{data.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: 'numeric' })}</span>
+                      {atual && <span className="text-[9px] uppercase tracking-wide">atual</span>}
+                    </button>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         )}
 
         {/* GAVETA RETRÁTIL DE CONFIGURAÇÃO & EDITOR (DRAWER Z-INDEX 15) */}

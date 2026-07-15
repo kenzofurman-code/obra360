@@ -47,6 +47,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 try:
@@ -54,6 +55,12 @@ try:
 except ImportError:
     print("Erro: instale as dependencias: pip install opencv-python")
     sys.exit(1)
+
+# probe_video daqui usa ffprobe (video_io.py) em vez de cv2.VideoCapture -
+# mesmo motivo do process_trajectory.py/gerar_quadros.py: o opencv-python pra
+# Windows falha em abrir alguns codecs (ex.: ProRes), ffprobe/ffmpeg do
+# sistema nao tem esse problema, independente do codec.
+from video_io import probe_video as _probe_video_ffmpeg
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 VOCAB_URL = "https://github.com/stella-cv/FBoW_orb_vocab/raw/main/orb_vocab.fbow"
@@ -94,14 +101,13 @@ Mapping:
 
 
 def probe_video(path):
-    cap = cv2.VideoCapture(path)
-    if not cap.isOpened():
+    try:
+        fps, w, h, _total, _dur = _probe_video_ffmpeg(path)
+    except Exception as e:
+        raise RuntimeError(f"Nao consegui abrir o video: {path} ({e})")
+    if w <= 0 or h <= 0:
         raise RuntimeError(f"Nao consegui abrir o video: {path}")
-    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-    cap.release()
-    return w, h, fps
+    return w, h, (fps or 30.0)
 
 
 def reduzir_video(video_path, work_dir, max_lado, fps):
@@ -118,7 +124,10 @@ def reduzir_video(video_path, work_dir, max_lado, fps):
     cmd = ["ffmpeg", "-y", "-i", video_path, "-vf",
            f"scale={max_lado}:{nova_h}", "-c:v", "libx264", "-crf", "18",
            "-preset", "veryfast", "-an", saida]
+    t0 = time.time()
     subprocess.run(cmd, check=True, capture_output=True)
+    print(f"[SLAM] [TIMING] Reducao de video (decode {w}x{h} + encode {max_lado}x{nova_h}): "
+          f"{time.time() - t0:.1f}s")
     return saida, max_lado, nova_h
 
 
@@ -160,7 +169,9 @@ def rodar_docker(docker_image, work_dir, video_nome, vocab_nome, cfg_nome,
         docker_image, "-c", cmd_interno,
     ]
     print(f"[SLAM] Rodando container: {' '.join(docker_cmd)}")
+    t0 = time.time()
     subprocess.run(docker_cmd, check=True)
+    print(f"[SLAM] [TIMING] stella_vslam (Docker, tracking+mapping): {time.time() - t0:.1f}s")
 
 
 def main():
@@ -192,17 +203,22 @@ def main():
               "que a imagem stella_vslam-socket foi construida (ver instrucoes no topo deste arquivo).")
         sys.exit(1)
 
+    t_total = time.time()
+    t0 = time.time()
     vocab_path = garantir_vocab(args.vocab)
+    print(f"[SLAM] [TIMING] Vocabulario ORB (cache/download): {time.time() - t0:.1f}s")
 
     work_dir = tempfile.mkdtemp(prefix="rodar_slam_")
     try:
         _, _, fps_original = probe_video(args.video)
         video_final, cols, rows = reduzir_video(args.video, work_dir, args.max_lado, fps_original)
 
+        t0 = time.time()
         video_nome = "video_slam.mp4"
         shutil.copy(video_final, os.path.join(work_dir, video_nome))
         vocab_nome = "orb_vocab.fbow"
         shutil.copy(vocab_path, os.path.join(work_dir, vocab_nome))
+        print(f"[SLAM] [TIMING] Copia de arquivos pro work_dir: {time.time() - t0:.1f}s")
 
         cfg_path = gerar_config(work_dir, cols, rows, fps_original)
         cfg_nome = os.path.basename(cfg_path)
@@ -213,6 +229,7 @@ def main():
         rodar_docker(args.docker_image, work_dir, video_nome, vocab_nome,
                      cfg_nome, args.manter_mapa, mapa_nome)
 
+        t0 = time.time()
         traj_gerada = os.path.join(work_dir, "eval", "frame_trajectory.txt")
         if not os.path.exists(traj_gerada):
             print("[ERRO] stella_vslam rodou mas nao gerou frame_trajectory.txt "
@@ -228,6 +245,8 @@ def main():
                 print(f"[SLAM] Mapa salvo em: {args.mapa_out}")
             else:
                 print("[AVISO] --manter-mapa pedido mas mapa.msg nao foi gerado pelo container.")
+        print(f"[SLAM] [TIMING] Copia dos resultados finais: {time.time() - t0:.1f}s")
+        print(f"[SLAM] [TIMING] rodar_slam.py TOTAL: {time.time() - t_total:.1f}s")
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 

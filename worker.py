@@ -58,6 +58,18 @@ from processar_vistoria import (run_trajectory, run_pdf_extractor, run_map_match
                                 run_ambientes_extractor, estabilizar_paradas)
 
 
+# ─── Timing por etapa (2026-07-15: Pedro relatou runs de >1h sem visibilidade
+# de qual etapa consumia o tempo - nenhum script imprimia timestamp nenhum.
+# Cada chamada relevante abaixo agora imprime [TIMING] <etapa>: Xs) ──────────
+
+def _marcar(t_ref, label):
+    """Imprime o tempo decorrido desde t_ref com o rotulo dado; retorna o novo
+    marco (time.time()) para a proxima etapa poder medir so' o seu proprio trecho."""
+    agora = time.time()
+    print(f"[TIMING] {label}: {agora - t_ref:.1f}s")
+    return agora
+
+
 # ─── Video: R2 ou local ──────────────────────────────────────────────────────
 
 def baixar_video_r2(chave, destino):
@@ -239,6 +251,8 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
     tmp_dir = tempfile.mkdtemp(prefix=f'obra360_{visita_id}_')
     firebase_client.atualizar_status(visita_id, 'processando')
 
+    t_visita_inicio = time.time()
+    t0 = t_visita_inicio
     try:
         # 1. Video: local (--video) ou baixado do R2 (campo video_r2_key)
         video_path = video_local
@@ -250,14 +264,19 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
                     "(ver GAP 3 no topo do arquivo: o Upload.jsx ainda nao grava esse campo).")
             video_path = os.path.join(tmp_dir, 'video.mp4')
             baixar_video_r2(chave, video_path)
+            t0 = _marcar(t0, "1. Download do video (R2)")
+        else:
+            t0 = _marcar(t0, "1. Video local (sem download)")
 
         # 1.5 Corta o inicio parado (posicionamento da camera), se configurado -
         # SLAM e gerar_quadros usam o video_path resultante, entao ficam em sincronia.
         if corte_inicial:
             video_path = cortar_video_inicio(video_path, corte_inicial, tmp_dir)
+            t0 = _marcar(t0, "1.5 Corte do inicio do video (reencode ffmpeg)")
 
         # 2. Trajetoria bruta: tenta SLAM (alta precisao), cai para odometria leve
         traj_tum, mapa_msg = rodar_slam_se_disponivel(video_path, tmp_dir)
+        t0 = _marcar(t0, "2. SLAM (rodar_slam.py, Docker) ou deteccao de fallback")
         if traj_tum:
             print("[SLAM] Convertendo trajetoria TUM -> raw_waypoints...")
             raw_waypoints = tum_para_raw_waypoints(traj_tum)
@@ -271,15 +290,18 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
                 # enquanto; upload/persistencia de longo prazo fica pra quando essa
                 # feature for exposta no produto.
                 print(f"[SLAM] mapa.msg disponivel em: {mapa_msg} (nao excluir)")
+            t0 = _marcar(t0, "2.1 Conversao TUM -> raw_waypoints")
         else:
             raw_json = os.path.join(tmp_dir, 'trajetoria_bruta.json')
             raw_waypoints = run_trajectory(video_path, raw_json, rate=0.5)
+            t0 = _marcar(t0, "2.1 Odometria leve (process_trajectory.py, fallback sem SLAM)")
 
         # 2.5 Congela trechos parados (ex.: posicionando a camera no inicio do
         # video) - SLAM parado pode derivar/tremer e isso conta como distancia
         # falsa na amostragem do gerar_quadros.py, desencontrando o quadro da
         # posicao real logo no comeco do percurso (ver estabilizar_paradas).
         raw_waypoints = estabilizar_paradas(raw_waypoints)
+        t0 = _marcar(t0, "2.5 Estabilizar paradas")
 
         # 3. Vaos de porta do PDF vetorial (geometria de arco - extrair_portas.py;
         # aspecto da pagina e' necessario pro Map Matching nao distorcer a
@@ -293,6 +315,7 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         ambientes_json = os.path.join(tmp_dir, 'ambientes.json')
         ambientes = run_ambientes_extractor(pdf_path, ambientes_json)
         os.unlink(pdf_path)
+        t0 = _marcar(t0, "3. Extracao do PDF (portas + ambientes)")
 
         # 4. Map matching (ancora + correcao por porta) - mesma logica do frontend.
         # calibracao traz ancora1/heading_offset/path_scale/espelhar_caminho -
@@ -307,10 +330,12 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         waypoints_json = os.path.join(tmp_dir, 'waypoints_corrigidos.json')
         with open(waypoints_json, 'w', encoding='utf-8') as f:
             json.dump(waypoints_corrigidos, f)
+        t0 = _marcar(t0, "4. Map matching")
 
         # 5. Panoramas + upload R2
         out_dir = os.path.join(tmp_dir, 'quadros')
         manifest_path = gerar_panoramas(video_path, waypoints_json, visita_id, out_dir)
+        t0 = _marcar(t0, "5. Panoramas (gerar_quadros.py, inclui upload R2)")
 
         # 6. Atualiza Firestore (1 escrita so). Salva o aspecto da planta tambem -
         # o site (Visita.jsx) precisa do MESMO valor pra desfazer a transformacao
@@ -356,8 +381,9 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         elif manifest_path:
             print("[AVISO] R2_PUBLIC_URL nao definido - manifest_url nao foi salvo no Firestore "
                   f"(panoramas estao em {manifest_path}, so localmente/no bucket).")
-        firebase_client.atualizar_campos(visita_id, dados)
+        t0 = _marcar(t0, "6. Atualizar Firestore")
         print(f"[OK] Vistoria {visita_id} processada com sucesso.")
+        print(f"[TIMING] TOTAL da vistoria {visita_id}: {time.time() - t_visita_inicio:.1f}s")
 
     except Exception as e:
         firebase_client.atualizar_status(visita_id, 'erro')

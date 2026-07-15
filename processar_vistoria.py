@@ -156,27 +156,28 @@ def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
                         heading_offset: float, path_scale: float, espelhar: bool,
                         aspecto: float = 1.0, min_portas: int = 4) -> tuple:
     """
-    Recalibra (ancora1, heading_offset, path_scale, espelhar) usando as portas
-    detectadas no PDF como pontos de referência MÚLTIPLOS, em vez de confiar só
-    na âncora única configurada manualmente no site.
+    Recalibra (ancora1, path_scale) usando as portas detectadas no PDF como
+    pontos de referência MÚLTIPLOS, em vez de confiar só na âncora única
+    configurada manualmente no site.
 
-    Motivo: a âncora única + heading/escala manual é só um CHUTE inicial - a
-    escala do SLAM monocular é arbitrária a cada vídeo (sem relação nenhuma com
-    o que foi calibrado antes/em outro vídeo), então esse chute frequentemente
-    fica torto (espelhado errado, escala errada). Isso é exatamente o que o
-    caminho_slam_6pav_FINAL.json (bom) tinha e o pipeline atual não: um ajuste
-    por mínimos quadrados usando VÁRIOS pontos de referência, com auto-detecção
-    de espelhamento e validação por holdout - ver slam_to_obra360.py
-    (align_by_references/door_quality_and_correction), cuja técnica (Umeyama)
-    é reaproveitada aqui (import, sem duplicar/alterar aquele arquivo), só que
-    usando as portas do PDF como referência em vez de pontos marcados à mão -
-    portas sempre existem numa vistoria automatizada, um gabarito manual não.
+    MUDANÇA (2026-07-15, decisão do Pedro após 3 vistorias reais processadas):
+    heading_offset e espelhar NÃO são mais recalibrados/testados aqui - ficam
+    FIXOS no que for passado (default 90°/True em criarVisita(), src/lib/visitas.js).
+    Antes, essa função tentava as duas variantes de espelhamento (True/False) e
+    também deixava o heading flutuar livremente pro que o ajuste (Umeyama)
+    encontrasse - mas heading/espelhar são propriedade da CÂMERA/convenção de
+    gravação (deveriam ser as mesmas em todo vídeo do mesmo equipamento), não
+    algo que devesse variar vídeo a vídeo. O único valor que realmente é
+    arbitrário por vídeo é a ESCALA (SLAM monocular não tem referência de
+    escala absoluta - por isso ela sozinha continua sendo ajustada aqui,
+    variando ~2-3% nos testes reais do Pedro). Deixar heading/espelhar livres
+    também corria o risco de o ajuste escolher uma combinação com residual
+    baixo mas fisicamente errada (o prédio pode ter simetrias que produzem
+    mais de um encaixe plausível nas portas).
 
-    Só substitui os valores manuais se a validação (ajusta com metade das
-    portas, mede erro na outra metade) mostrar que o ajuste automático é
-    realmente bom - senão mantém o que estava configurado (preserva o caso
-    excepcional citado em tum_para_raw_waypoints, ex.: percurso de propósito
-    no sentido contrário).
+    Só substitui os valores manuais (ancora/escala) se a validação (ajusta com
+    metade das portas, mede erro na outra metade) mostrar que o ajuste
+    automático é realmente bom - senão mantém o que estava configurado.
 
     IMPORTANTE (aprendido num teste real em 2026-07-13): a correspondência
     porta<->trajetória usa detectar_cruzamentos_vaos() - exige uma passagem
@@ -184,119 +185,113 @@ def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
     centro"), então é bem mais resistente a grudar na porta errada mesmo com
     modelos repetidos no prédio (PM1/PM2/PM3 = código de tamanho/tipo, não de
     porta única). Mesmo assim é um REFINAMENTO a partir do chute
-    (ancora1/heading_offset/path_scale) atual, não um solver totalmente livre
-    de chute - o refinamento iterativo abaixo ajuda a convergir quando o chute
-    já está na ordem de grandeza certa. Se você já validou manualmente (ex.:
-    arrastando os sliders no site até os corredores alinharem), salve esses
-    valores ANTES de rodar o worker, pra dar um chute inicial melhor.
+    (ancora1/path_scale) atual, não um solver totalmente livre de chute - o
+    refinamento iterativo abaixo ajuda a convergir quando o chute já está na
+    ordem de grandeza certa.
 
-    Retorna (ancora1, heading_offset, path_scale, espelhar, info) - info é um
+    Retorna (ancora1, heading_offset, path_scale, espelhar, info) - heading_offset
+    e espelhar saem IDÊNTICOS ao que entrou (nunca recalibrados); info é um
     dict com detalhes pra log/depuração (usado_auto, n_portas, residual_val, motivo).
     """
-    from slam_to_obra360 import umeyama
-
     vaos_fis = vaos_em_fisico(vaos, aspecto)
+    theta = math.radians(heading_offset + 180)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
 
-    def _fontes_alvos(cruzamentos, espelhar_var):
+    def _rot_fixo(wp_x, wp_y):
+        """Mirror + rotacao com heading/espelhar FIXOS (ver motivo no
+        docstring acima) - so' resta ajustar escala+ancora (translacao) por
+        minimos quadrados contra os cruzamentos de porta."""
+        dx = -wp_x if espelhar else wp_x
+        dy = -wp_y
+        rx = dx * cos_t - dy * sin_t
+        ry = dx * sin_t + dy * cos_t
+        return rx, ry
+
+    def _fontes_alvos(cruzamentos):
         fontes, alvos = [], []
         for c in cruzamentos:
-            rx, ry = _interp_raw_em(raw_waypoints, c['t'])
-            fx = -rx if espelhar_var else rx
-            fy = -ry
-            fontes.append([fx, fy])
+            rx0, ry0 = _interp_raw_em(raw_waypoints, c['t'])
+            u, v = _rot_fixo(rx0, ry0)
+            fontes.append([u, v])
             alvos.append(list(c['centro']))
         return np.array(fontes), np.array(alvos)
 
-    def _decompor(T):
-        """Extrai (ancora1, heading_offset, path_scale) do similarity transform T,
-        avaliando em pontos conhecidos em vez de introspectar a closure do
-        umeyama (robusto a mudancas internas naquele arquivo, que nao deve
-        ser alterado)."""
-        o = T(np.array([[0.0, 0.0]]))[0]
-        ex = T(np.array([[1.0, 0.0]]))[0] - o
-        ey = T(np.array([[0.0, 1.0]]))[0] - o
-        escala = float((np.linalg.norm(ex) + np.linalg.norm(ey)) / 2)
-        heading = (math.degrees(math.atan2(ex[1], ex[0])) - 180.0) % 360
-        anc = {'x': float(o[0]), 'y': float(o[1]) / aspecto}
-        return anc, heading, escala
+    def _ajustar_escala_translacao(fontes, alvos):
+        """Ajuste de minimos quadrados so' de escala isotropica + translacao
+        (heading/espelhar ja fixos em _rot_fixo, entao NAO e' o Umeyama geral
+        - esse so' giraria/espelharia de novo). Equivalente a um Procrustes
+        com rotacao travada: escala = <fontes centradas, alvos centrados> /
+        <fontes centradas, fontes centradas>; translacao = media dos alvos -
+        escala * media das fontes."""
+        media_f = fontes.mean(axis=0)
+        media_a = alvos.mean(axis=0)
+        cf = fontes - media_f
+        ca = alvos - media_a
+        denom = float((cf * cf).sum())
+        escala = float((cf * ca).sum()) / denom if denom > 1e-9 else path_scale
+        tx, ty = media_a - escala * media_f
+        return escala, float(tx), float(ty)
 
-    def _cruzamentos_com(ancora_i, heading_i, escala_i, espelhar_var):
+    def _cruzamentos_com(escala_i, tx_i, ty_i):
         pontos_fis = []
         for wp in raw_waypoints:
-            px, py = alinhar_ponto(wp['x'], wp['y'], ancora_i, heading_i,
-                                   escala_i, espelhar_var, aspecto)
-            pontos_fis.append({'t': wp['t'], 'x': px, 'y': py * aspecto})
+            u, v = _rot_fixo(wp['x'], wp['y'])
+            pontos_fis.append({'t': wp['t'], 'x': tx_i + u * escala_i, 'y': ty_i + v * escala_i})
         return detectar_cruzamentos_vaos(pontos_fis, vaos_fis)
 
-    def tentar_variante(espelhar_var):
-        # Refinamento iterativo: comeca com o chute atual, detecta os
-        # cruzamentos geometricos, reajusta (Umeyama) e repete com o ajuste
-        # da rodada anterior - um alinhamento melhor pode revelar cruzamentos
-        # reais que nao apareciam antes (ou descartar os que so' pareciam
-        # cruzar por acaso do chute ainda impreciso).
-        ancora_i, heading_i, escala_i = ancora1, heading_offset, path_scale
-        cruzamentos = None
-        for _ in range(3):
-            novos = _cruzamentos_com(ancora_i, heading_i, escala_i, espelhar_var)
-            if len(novos) < min_portas:
-                break  # fica com o resultado da rodada anterior
-            cruzamentos = novos
-            fontes, alvos = _fontes_alvos(cruzamentos, espelhar_var)
-            T = umeyama(fontes, alvos)
-            ancora_i, heading_i, escala_i = _decompor(T)
+    # Refinamento iterativo: comeca do chute atual (ancora1/path_scale),
+    # detecta os cruzamentos geometricos, reajusta (so' escala+translacao) e
+    # repete com o ajuste da rodada anterior - um alinhamento melhor pode
+    # revelar cruzamentos reais que nao apareciam antes.
+    escala_i = path_scale
+    tx_i, ty_i = ancora1['x'], ancora1['y'] * aspecto
+    cruzamentos = None
+    for _ in range(3):
+        novos = _cruzamentos_com(escala_i, tx_i, ty_i)
+        if len(novos) < min_portas:
+            break  # fica com o resultado da rodada anterior
+        cruzamentos = novos
+        fontes, alvos = _fontes_alvos(cruzamentos)
+        escala_i, tx_i, ty_i = _ajustar_escala_translacao(fontes, alvos)
 
-        if cruzamentos is None or len(cruzamentos) < min_portas:
-            return None
-
-        # Validação por holdout: ajusta (Umeyama) só com metade das portas
-        # finais, mede o erro na outra metade - gate contra confiar num ajuste
-        # coincidente/ruidoso quando há poucas portas.
-        fontes, alvos = _fontes_alvos(cruzamentos, espelhar_var)
-        rng = np.random.default_rng(0)
-        idx = rng.permutation(len(fontes))
-        corte = max(2, len(idx) // 2)
-        i_fit, i_val = idx[:corte], idx[corte:]
-        if len(i_val) == 0:
-            i_val = i_fit
-        T_fit = umeyama(fontes[i_fit], alvos[i_fit])
-        residual_val = float(np.linalg.norm(T_fit(fontes[i_val]) - alvos[i_val], axis=1).mean())
-
-        return {
-            'espelhar': espelhar_var,
-            'n_portas': len(cruzamentos),
-            'residual_val': residual_val,
-            'fontes': fontes,
-            'alvos': alvos,
-        }
-
-    candidatos = [r for r in (tentar_variante(False), tentar_variante(True)) if r]
-    if not candidatos:
+    if cruzamentos is None or len(cruzamentos) < min_portas:
         return ancora1, heading_offset, path_scale, espelhar, {
             'usado_auto': False,
             'motivo': f'menos de {min_portas} portas detectadas - mantendo calibração manual',
         }
 
-    melhor = min(candidatos, key=lambda c: c['residual_val'])
+    # Validação por holdout: ajusta (escala+translacao) só com metade das
+    # portas finais, mede o erro na outra metade - gate contra confiar num
+    # ajuste coincidente/ruidoso quando há poucas portas.
+    fontes, alvos = _fontes_alvos(cruzamentos)
+    rng = np.random.default_rng(0)
+    idx = rng.permutation(len(fontes))
+    corte = max(2, len(idx) // 2)
+    i_fit, i_val = idx[:corte], idx[corte:]
+    if len(i_val) == 0:
+        i_val = i_fit
+    escala_fit, tx_fit, ty_fit = _ajustar_escala_translacao(fontes[i_fit], alvos[i_fit])
+    pred_val = np.array([tx_fit, ty_fit]) + escala_fit * fontes[i_val]
+    residual_val = float(np.linalg.norm(pred_val - alvos[i_val], axis=1).mean())
 
     # Só adota o ajuste automático se o residual de validação for baixo o
     # bastante pra confiar (5% da planta) - senão pode ser só ruído/poucas
     # portas que bateram por acaso, e a calibração manual fica valendo.
     LIMIAR_RESIDUAL = 0.05
-    if melhor['residual_val'] > LIMIAR_RESIDUAL:
+    if residual_val > LIMIAR_RESIDUAL:
         return ancora1, heading_offset, path_scale, espelhar, {
-            'usado_auto': False, 'n_portas': melhor['n_portas'],
-            'residual_val': melhor['residual_val'],
+            'usado_auto': False, 'n_portas': len(cruzamentos),
+            'residual_val': residual_val,
             'motivo': 'residual de validação alto demais - mantendo calibração manual',
         }
 
-    # Ajuste final com TODAS as portas da variante vencedora (não só a metade
-    # de fit usada na validação).
-    T = umeyama(melhor['fontes'], melhor['alvos'])
-    ancora1_fit, heading_fit, escala_fit = _decompor(T)
+    # Ajuste final com TODAS as portas (não só a metade de fit da validação).
+    escala_final, tx_final, ty_final = _ajustar_escala_translacao(fontes, alvos)
+    ancora1_fit = {'x': float(tx_final), 'y': float(ty_final) / aspecto}
 
-    return ancora1_fit, heading_fit, escala_fit, melhor['espelhar'], {
-        'usado_auto': True, 'n_portas': melhor['n_portas'],
-        'residual_val': melhor['residual_val'],
+    return ancora1_fit, heading_offset, escala_final, espelhar, {
+        'usado_auto': True, 'n_portas': len(cruzamentos),
+        'residual_val': residual_val,
     }
 
 
@@ -477,7 +472,8 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     mesmo) deve gravar esses valores de volta no Firestore, ja' que o site usa
     os MESMOS campos pra re-alinhar a trajetoria na tela.
     """
-    print(f"\n[Pipeline] Calibrando automaticamente por multiplas portas (Umeyama)...")
+    print(f"\n[Pipeline] Calibrando escala/ancora automaticamente por multiplas portas "
+          f"(heading/espelhar fixos)...")
     ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
         raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
     if calib_info.get('usado_auto'):
@@ -734,8 +730,9 @@ def main():
         'path_scale': calibracao['path_scale'],
         'espelhar_caminho': calibracao['espelhar_caminho'],
         'ambientes': ambientes,
-        # Selo de qualidade: se a calibracao automatica por portas (Umeyama,
-        # ver calibrar_por_portas) foi adotada ou nao nesse processamento, e
+        # Selo de qualidade: se a calibracao automatica por portas (so' escala/
+        # ancora, heading/espelhar fixos - ver calibrar_por_portas) foi adotada
+        # ou nao nesse processamento, e
         # com que confianca (n_portas/residual_val) - o site usa isso pra
         # mostrar um badge (ver Visita.jsx).
         'selo_qualidade': calibracao['info'],

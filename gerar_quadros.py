@@ -12,11 +12,12 @@
 # Uso:
 #   python gerar_quadros.py --video v.mp4 --trajetoria caminho.json --out quadros/
 #   [--intervalo 0.025] [--pausa-min 4] [--janela 0.5] [--formato jpg]
-#   [--qualidade 82] [--miniaturas 1024]
+#   [--qualidade 92] [--miniaturas 1024]
 
 import os
 import sys
 import json
+import time
 import argparse
 import mimetypes
 import numpy as np
@@ -26,6 +27,11 @@ try:
 except ImportError:
     print("Erro: instale as dependencias: pip install opencv-python numpy")
     sys.exit(1)
+
+# Leitura do video via ffmpeg (video_io.py) em vez de cv2.VideoCapture direto -
+# ver motivo completo em video_io.py (opencv-python pra Windows falha com
+# alguns codecs, ex.: ProRes; ffmpeg do sistema e' agnostico de codec).
+from video_io import FFmpegVideoReader
 
 
 def carregar_trajetoria(path):
@@ -110,13 +116,15 @@ def subir_para_r2(pasta_local, bucket, prefix, tem_miniaturas):
         with open(caminho_local, "rb") as f:
             s3.put_object(Bucket=bucket, Key=chave, Body=f, ContentType=ctype)
 
+    t0 = time.time()
     arquivos = sorted(a for a in os.listdir(pasta_local)
                       if a != "manifest.json" and os.path.isfile(os.path.join(pasta_local, a)))
     print(f"[R2] Subindo {len(arquivos)} quadros para {bucket}/{prefix}/ ...")
     for i, a in enumerate(arquivos):
         put(os.path.join(pasta_local, a), f"{prefix}/{a}")
         if (i + 1) % 50 == 0:
-            print(f"[R2]   {i+1}/{len(arquivos)}")
+            decorrido = time.time() - t0
+            print(f"[R2]   {i+1}/{len(arquivos)} | {decorrido:.0f}s decorridos")
     if tem_miniaturas:
         minis = sorted(os.listdir(os.path.join(pasta_local, "mini")))
         print(f"[R2] Subindo {len(minis)} miniaturas...")
@@ -124,6 +132,7 @@ def subir_para_r2(pasta_local, bucket, prefix, tem_miniaturas):
             put(os.path.join(pasta_local, "mini", a), f"{prefix}/mini/{a}")
     put(os.path.join(pasta_local, "manifest.json"), f"{prefix}/manifest.json")
     print(f"[R2] Concluido. Manifest em: {prefix}/manifest.json")
+    print(f"[R2] [TIMING] Upload total: {time.time() - t0:.1f}s")
 
 
 def main():
@@ -140,7 +149,7 @@ def main():
     ap.add_argument("--janela", type=float, default=0.5,
                     help="Meia-janela (s) para buscar o frame mais nitido (padrao 0.5)")
     ap.add_argument("--formato", choices=["jpg", "webp"], default="jpg")
-    ap.add_argument("--qualidade", type=int, default=82)
+    ap.add_argument("--qualidade", type=int, default=92)
     ap.add_argument("--miniaturas", type=int, default=0,
                     help="Se >0, gera tambem miniaturas com esta largura (px)")
     ap.add_argument("--r2-bucket", default=None,
@@ -152,6 +161,7 @@ def main():
     args = ap.parse_args()
 
     print("[gerar_quadros] versao: fix-memoria-incremental-2026-07-12")
+    t_main = time.time()
     if not os.path.exists(args.video):
         print(f"Video nao encontrado: {args.video}")
         sys.exit(1)
@@ -168,7 +178,12 @@ def main():
     print(f"Trajetoria: {t[-1]:.0f}s | alvos: {len(alvos)} "
           f"({len(alvos)-n_pausas} por percurso + {n_pausas} em pausas)")
 
-    cap = cv2.VideoCapture(args.video)
+    t0 = time.time()
+    cap = FFmpegVideoReader(args.video)
+    if not cap.isOpened():
+        print(f"Erro ao abrir o video: {args.video}")
+        sys.exit(1)
+    print(f"[TIMING] Abrir video (ffmpeg pipe): {time.time() - t0:.1f}s")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     W = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -227,6 +242,7 @@ def main():
 
     prox = 0  # primeiro alvo cuja janela ainda nao terminou
     fidx = 0
+    t_loop = time.time()
     while prox < len(alvo_frames):
         ret, frame = cap.read()
         if not ret:
@@ -250,8 +266,14 @@ def main():
                     melhores[k] = (sc, frame.copy())
         fidx += 1
         if fidx % 2000 == 0:
-            print(f"  frame {fidx}/{total}")
+            decorrido = time.time() - t_loop
+            taxa = fidx / decorrido if decorrido > 0 else 0
+            eta = (total - fidx) / taxa if taxa > 0 else float("inf")
+            print(f"  frame {fidx}/{total} | {decorrido:.0f}s decorridos | "
+                  f"{taxa:.1f} frames/s decodificados | ETA {eta:.0f}s")
     cap.release()
+    print(f"[TIMING] Varredura do video (decode full-res + selecao de nitidez): "
+          f"{time.time() - t_loop:.1f}s ({fidx} frames)")
     # finaliza os alvos que restaram em aberto (janelas perto do fim do video)
     for k in range(prox, len(alvo_frames)):
         finalizar(k)
@@ -268,6 +290,8 @@ def main():
 
     if args.r2_bucket:
         subir_para_r2(args.out, args.r2_bucket, prefix, bool(args.miniaturas))
+
+    print(f"[TIMING] gerar_quadros.py TOTAL: {time.time() - t_main:.1f}s")
 
 
 if __name__ == "__main__":
