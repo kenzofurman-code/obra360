@@ -13,6 +13,10 @@ export default function Visita() {
   const navigate = useNavigate()
   const [visita, setVisita] = useState(null)
   const [waypoints, setWaypoints] = useState([])
+  // Lista de quadros (fotos) do manifest.json, recebida do PanoramaViewer via onQuadros -
+  // usada só pra desenhar/clicar nos marcadores de foto na PlantaViewer (ver
+  // framesAlinhados abaixo). Vistorias em modo vídeo (sem manifest_url) ficam com [].
+  const [quadros, setQuadros] = useState([])
   const [modoAdicionar, setModoAdicionar] = useState(false)
   const [pendente, setPendente] = useState(null) // { x, y }
   const [salvando, setSalvando] = useState(false)
@@ -247,6 +251,16 @@ export default function Visita() {
     return waypoints.map(alinharPonto)
   }, [waypoints, alinharPonto])
 
+  // Marcadores de foto pra PlantaViewer: cada quadro do manifest ja' tem x/y/t no
+  // MESMO espaco bruto (nao alinhado) das waypoints (ver gerar_quadros.py, ambos
+  // vem da mesma trajetoria) - passa pelo mesmo alinharPonto acima pra cair no
+  // espaco [0,1] da planta, igual waypointsAlinhados.
+  const framesAlinhados = useMemo(() => {
+    return quadros
+      .filter(q => Number.isFinite(q?.x) && Number.isFinite(q?.y) && Number.isFinite(q?.t))
+      .map(q => alinharPonto({ id: q.id, x: q.x, y: q.y, t: q.t }))
+  }, [quadros, alinharPonto])
+
   const posicaoAlinhada = useMemo(() => {
     return alinharPonto(posicao)
   }, [posicao, alinharPonto])
@@ -292,11 +306,17 @@ export default function Visita() {
         status: 'ready'
       })
       setWaypoints([])
+      setQuadros([])
       setHeadingOffset(0)
       setAncora1(null)
       setAncora2(null)
       return
     }
+
+    // Limpa os marcadores de foto da vistoria anterior (ex.: navegando pelo botão
+    // Histórico) - senão ficam sobrepostos na planta por um instante até o
+    // PanoramaViewer buscar e disparar onQuadros com o manifest novo.
+    setQuadros([])
 
     getVisita(id).then(v => {
       if (!v) { navigate('/'); return }
@@ -647,6 +667,7 @@ export default function Visita() {
             <PanoramaViewer
               manifestUrl={visita.manifest_url}
               onReady={registrarPlayer}
+              onQuadros={setQuadros}
               autoplay={false}
               waypoints={waypoints}
               headingOffset={headingOffset}
@@ -846,6 +867,7 @@ export default function Visita() {
               <PlantaViewer
                 plantaUrl={visita.planta_url}
                 waypoints={waypointsAlinhados}
+                frames={framesAlinhados}
                 posicao={posicaoAlinhada}
                 waypointAtivo={waypointAtivo}
                 onClickCoordenada={handleClickCoordenada}

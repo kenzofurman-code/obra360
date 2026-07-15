@@ -108,6 +108,10 @@ class FakePlayer {
 export default function PanoramaViewer({
   manifestUrl,
   onReady,
+  onQuadros, // expõe a lista de quadros (fotos) carregada do manifest pro componente pai
+             // (Visita.jsx), que precisa dela pra desenhar os marcadores de foto na
+             // PlantaViewer.jsx - ver comentário em "3.5 Desenha marcadores dos frames"
+             // lá e no useMemo framesAlinhados em Visita.jsx
   autoplay = false,
   waypoints = [],
   headingOffset = 0,
@@ -156,6 +160,7 @@ export default function PanoramaViewer({
         const lista = [...(data.quadros || [])].sort((a, b) => a.t - b.t)
         quadrosRef.current = lista
         setQuadros(lista)
+        if (onQuadros) onQuadros(lista)
       })
       .catch((e) => {
         if (active) setErro(e.message || String(e))
@@ -348,6 +353,11 @@ export default function PanoramaViewer({
     const renderPos = { x: 0, y: 0, initialized: false }
     let lastTimeRibbon = 0
     let line3D = null
+    // marcadores azul-claro de onde cada FOTO (quadro do manifest) fica em cima da
+    // fita 3D - pedido do Pedro em 2026-07-15: "queria ver onde estão as fotos" pra
+    // ter uma referência visual de quantos/quais pontos de parada existem ao longo
+    // do trajeto, sem precisar abrir a planta baixa pra isso.
+    let pointsQuadros = null
 
     const atualizarPassarela = () => {
       const t_now = fp.currentTime()
@@ -439,6 +449,43 @@ export default function PanoramaViewer({
       geo.computeVertexNormals()
       geo.attributes.position.needsUpdate = true
       if (geo.index) geo.index.needsUpdate = true
+
+      // Marcadores de foto: um ponto por quadro do manifest, na MESMA transformação
+      // (escala/espelhar/rotação relativa a xc,yc) usada pros vértices da fita acima -
+      // assim eles ficam grudados na fita, sempre no lugar exato onde aquela foto foi
+      // tirada, mesmo quando o usuário ajusta ribbonScale/ribbonRotationOffset.
+      if (!pointsQuadros) {
+        const materialPontos = new THREE.PointsMaterial({
+          color: 0x93c5fd, // azul mais claro que o 0x3b82f6 da fita, conforme pedido
+          size: 4,
+          sizeAttenuation: false,
+          transparent: true,
+          depthWrite: false,
+        })
+        const geoPontos = new THREE.BufferGeometry()
+        pointsQuadros = new THREE.Points(geoPontos, materialPontos)
+        pointsQuadros.frustumCulled = false
+        pointsQuadros.renderOrder = 2 // acima da fita (1) e das esferas do panorama (0)
+        scene.add(pointsQuadros)
+      }
+      pointsQuadros.material.opacity = Math.min(1, (lineOpacityRef.current / 100) + 0.15)
+
+      const posQuadros = []
+      const escalaPts = 22 * ribbonScaleRef.current
+      const radPts = THREE.MathUtils.degToRad(ribbonRotationRef.current)
+      for (const q of quadrosRef.current) {
+        if (!Number.isFinite(q?.x) || !Number.isFinite(q?.y)) continue
+        const rawDx = (q.x - xc) * escalaPts
+        const dx0 = espelharCaminhoRef.current ? -rawDx : rawDx
+        const dy0 = (q.y - yc) * escalaPts
+        const dx = dx0 * Math.cos(radPts) - dy0 * Math.sin(radPts)
+        const dy = dx0 * Math.sin(radPts) + dy0 * Math.cos(radPts)
+        posQuadros.push(dx, -2.0, -dy) // ry=-2.0: um pouco acima da fita (-2.1) pra nao ter z-fighting
+      }
+      const geoPontos = pointsQuadros.geometry
+      geoPontos.setAttribute('position', new THREE.Float32BufferAttribute(posQuadros, 3))
+      geoPontos.attributes.position.needsUpdate = true
+      geoPontos.computeBoundingSphere()
     }
 
     // --- Avanço automático (play) + loop de render ---
@@ -507,6 +554,10 @@ export default function PanoramaViewer({
       geometry.dispose()
       matA.dispose()
       matB.dispose()
+      if (pointsQuadros) {
+        pointsQuadros.geometry.dispose()
+        pointsQuadros.material.dispose()
+      }
       renderer.dispose()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
       fakePlayerRef.current = null

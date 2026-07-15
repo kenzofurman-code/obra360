@@ -14,6 +14,10 @@ pdfjs.GlobalWorkerOptions.workerPort = new pdfjsWorker()
 export default function PlantaViewer({
   plantaUrl,
   waypoints = [],
+  frames = [], // marcadores individuais de FOTO (um por quadro do manifest.json, com
+               // x/y/t já alinhados via alinharPonto em Visita.jsx) - pedido do Pedro
+               // em 2026-07-15: ver onde cada foto fica na planta pra clicar de forma
+               // mais assertiva, em vez de só a linha tracejada da trajetória bruta
   posicao,
   waypointAtivo,
   onClickCoordenada,
@@ -251,6 +255,21 @@ export default function PlantaViewer({
       ctx.setLineDash([])
     }
 
+    // 3.5 Desenha marcadores individuais de FOTO (um por quadro do manifest.json) -
+    // azul mais claro que os pins de waypoint/ancora, só um ponto pequeno indicando
+    // "aqui existe uma foto navegável". Ajuda a clicar de forma mais assertiva no
+    // trajeto em vez de tentar acertar um ponto qualquer da linha tracejada - ver
+    // hit-test correspondente em processClick abaixo.
+    if (frames.length > 0) {
+      ctx.fillStyle = 'rgba(147, 197, 253, 0.85)'
+      frames.forEach((fr) => {
+        const { cx, cy } = toCanvasPixels(fr.x, fr.y)
+        ctx.beginPath()
+        ctx.arc(cx, cy, 2.4, 0, Math.PI * 2)
+        ctx.fill()
+      })
+    }
+
     // 4. Desenha Cone de Visao (FOV) por rotação vetorial direta
     // Não usa Math.atan2 nem ctx.arc, evitando inversão de esquerda/direita.
     // O triângulo é construído rotacionando ±30° o vetor de visão (rx, ry).
@@ -393,7 +412,7 @@ export default function PlantaViewer({
       ctx.textAlign = 'center'
       ctx.fillText('B', cx, cy + 3)
     }
-  }, [waypoints, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho, toCanvasPixels, coneFrameOffset])
+  }, [waypoints, frames, posicao, waypointAtivo, getCameraYaw, headingOffset, ancora1, ancora2, visitaSobreposta, zoom, pan, espelharCaminho, toCanvasPixels, coneFrameOffset])
 
   // Reanima continuamente
   useEffect(() => {
@@ -544,6 +563,23 @@ export default function PlantaViewer({
       return
     }
 
+    // Clique perto de uma FOTO especifica (marcador azul-claro, ver desenho acima):
+    // pula direto pro tempo exato daquela foto, em vez de cair na interpolação por
+    // segmento mais abaixo (que pode acertar um ponto qualquer entre duas fotos).
+    if (frames.length > 0 && player) {
+      const FRAME_THRESH = 0.018 / zoom
+      let melhorFrame = null
+      let melhorDist = Infinity
+      for (const fr of frames) {
+        const d = Math.sqrt((fr.x - x) ** 2 + (fr.y - y) ** 2)
+        if (d < melhorDist) { melhorDist = d; melhorFrame = fr }
+      }
+      if (melhorFrame && melhorDist < FRAME_THRESH) {
+        player.currentTime(melhorFrame.t)
+        return
+      }
+    }
+
     if (waypoints.length > 1 && player) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       let minDistance = Infinity
@@ -584,7 +620,7 @@ export default function PlantaViewer({
     if (onClickCoordenada) {
       onClickCoordenada(x, y)
     }
-  }, [waypoints, onClickCoordenada, onClickWaypoint, modoCalibrarAncoras, player, zoom, pan])
+  }, [waypoints, frames, onClickCoordenada, onClickWaypoint, modoCalibrarAncoras, player, zoom, pan])
 
   const handleMouseUp = useCallback((e) => {
     isDraggingRef.current = false
@@ -635,6 +671,12 @@ export default function PlantaViewer({
           <span className="w-2 h-2 rounded-full bg-sinal-500 inline-block" />
           waypoint
         </span>
+        {frames.length > 0 && (
+          <span className="flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: 'rgba(147, 197, 253, 0.85)' }} />
+            foto
+          </span>
+        )}
         {(ancora1 || ancora2) && (
           <span className="flex items-center gap-1.5">
             <span className="w-2 h-2 rounded-full bg-blue-500 inline-block" />
