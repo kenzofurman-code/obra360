@@ -33,9 +33,15 @@ from extrair_portas import extrair as extrair_portas, _parsear_esquadrias
 PAT_AREA_JUNTO = re.compile(r'^(\d+,\d+)\s*m[²2]$', re.IGNORECASE)   # "11,11m²" num token so
 PAT_NUM = re.compile(r'^\d+,\d+$')                                    # "11,11"
 PAT_M2 = re.compile(r'^m[²2]\.?$', re.IGNORECASE)                     # "m²" separado
+# "A=8,28m2" - convencao usada na planta P070 (2026-07-15): prefixo "A=" colado
+# no numero, e "m2" com "2" normal em vez do simbolo "²" - nenhum dos 2
+# padroes acima casava (PAT_AREA_JUNTO exige o token COMECAR com digito, sem
+# prefixo "A="), entao essa planta extraia 0 ambientes. Testado contra o PDF
+# real: 55 areas encontradas (0 antes).
+PAT_AREA_PREFIXO = re.compile(r'^A=(\d+,\d+)\s*m[²2]\.?$', re.IGNORECASE)
 
 PAT_NUMERICO = re.compile(r'^[+\-]?\d+([.,]\d+)?$')                  # numero puro (cota/dimensao)
-PAT_CODIGO_PORTA = re.compile(r'^(P[MJUCAF]{1,2}\d+[A-Z]?)$')        # mesmo regex de extrair_portas.py
+PAT_CODIGO_PORTA = re.compile(r'^(P[MJUCAF]{0,2}\d+[A-Z]?)$')        # mesmo regex de extrair_portas.py
 PALAVRAS_RUIDO = {'ACAB', 'OSSO', 'CONTRAP', 'FINAL', 'M2', 'M²'}
 
 
@@ -53,9 +59,13 @@ def _nomear_ambientes(page, raio_nome=60.0):
     for i, w in enumerate(words):
         texto = w[4]
         m = PAT_AREA_JUNTO.match(texto)
+        mp = PAT_AREA_PREFIXO.match(texto)
         if m:
             cx, cy = (w[0]+w[2])/2, (w[1]+w[3])/2
             areas.append((cx, cy, float(m.group(1).replace(',', '.')), {i}))
+        elif mp:
+            cx, cy = (w[0]+w[2])/2, (w[1]+w[3])/2
+            areas.append((cx, cy, float(mp.group(1).replace(',', '.')), {i}))
         elif PAT_M2.match(texto) and i > 0 and PAT_NUM.match(words[i-1][4]):
             num_w = words[i-1]
             cx, cy = (num_w[0]+w[2])/2, (num_w[1]+w[3])/2
