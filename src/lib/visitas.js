@@ -39,16 +39,35 @@ export async function listarVisitasDoLocal(localId) {
 
 // ── Escrita ──────────────────────────────────────────────────────────────────
 
+// Valores padrao de calibracao abaixo (heading/escala/espelhar/passarela/cone)
+// vieram da aproximacao validada pelo Pedro em 2026-07-15 rodando o SLAM real
+// (Insta360 X3 + stella_vslam via Docker) em duas importacoes diferentes (P073
+// e P070) - os mesmos ajustes se repetiram nas duas, entao viram o ponto de
+// partida de toda vistoria nova em vez de precisar recalibrar do zero cada
+// vez (motivo: 1 rodada de worker.py leva varios minutos, refazer manualmente
+// pra cada vistoria nao escala). Se ISSO deixar de valer (ex.: mudar de
+// camera, resolucao, ou orientacao de gravacao), reajuste os padroes aqui.
+//
+// heading_offset/path_scale/espelhar_caminho: os 3 que realmente entram no
+// alinhamento com a planta (run_map_matching em processar_vistoria.py) -
+// comecar com eles proximos do certo e' o que destrava a deteccao de
+// cruzamento de portas (min_portas=4 pra auto-calibracao por Umeyama entrar).
+// NOTA: o comentario antigo dizia que espelhar_caminho=False era o padrao
+// "correto" pos-fix do SLAM (ver tum_para_raw_waypoints) - a calibracao real
+// do Pedro mostrou que True da o melhor resultado visual pra essa camera/
+// configuracao de gravacao, entao virou o novo padrao. Se voltar pra H.264/
+// outra camera e sair espelhado ao contrario, e' aqui que se ajusta de volta.
+//
+// passarela_escala/passarela_rotacao/cone_frame_offset: SO cosmeticos (como a
+// passarela 3D e o cone de direcao aparecem desenhados em cima da foto 360
+// no visualizador) - nao afetam o alinhamento com a planta nem a deteccao de
+// portas, mas repetiram tambem nas duas calibracoes entao ja vao default.
 export async function criarVisita({
   pavimento, hls_url, thumbnail_url, planta_url, duracao_segundos,
   waypoints = [], is_imported = false,
   ancora1 = null, ancora2 = null, // opcional: definida na hora do upload (ver Upload.jsx)
-  // padrao mudou pra false em 2026-07-12: agora que o SLAM (worker.py/rodar_slam.py)
-  // ja corrige o proprio espelhamento na fonte (ver tum_para_raw_waypoints), deixar
-  // espelhar_caminho ligado por padrao inverteria de novo. Só ligue manualmente se
-  // uma vistoria especifica sair espelhada (ex.: caiu no fallback de odometria leve,
-  // que tem a convencao de eixo oposta).
-  heading_offset = 0, path_scale = 0.15, espelhar_caminho = false,
+  heading_offset = 90, path_scale = 0.029, espelhar_caminho = true,
+  passarela_escala = 0.08, passarela_rotacao = 90, cone_frame_offset = 90,
   // obra_id/local_id: novos campos (2026-07-14) - ligam a vistoria ao seletor
   // de projeto/aba de locais (ver obras.js/locais.js). data_vistoria e' a data
   // REAL da inspecao (editavel no Upload.jsx, pode diferir da data de upload
@@ -74,6 +93,9 @@ export async function criarVisita({
     is_imported: is_imported || false,
     path_scale,                       // Escala da trajetória relativa na planta
     espelhar_caminho,
+    passarela_escala,                 // Escala visual da passarela 3D (cosmetico)
+    passarela_rotacao,                // Rotacao visual da passarela 3D (cosmetico)
+    cone_frame_offset,                // Ajuste visual do cone de direcao (cosmetico)
     status: 'ready',
     data: serverTimestamp(),
   })
