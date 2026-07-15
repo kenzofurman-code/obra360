@@ -862,10 +862,10 @@ export default function Visita() {
 
         {/* GAVETA RETRÁTIL DE CONFIGURAÇÃO & EDITOR (DRAWER Z-INDEX 15) */}
         {menuAberto && (
-          <div className="absolute top-0 right-0 h-full w-[310px] bg-concreto-950/95 backdrop-blur-md border-l border-concreto-700/80 shadow-2xl flex flex-col p-4 gap-4 z-15 transition-transform duration-300 translate-x-0 overflow-y-auto">
-            
-            {/* Header do Drawer - sticky (fica visivel mesmo rolando o painel) */}
-            <div className="sticky top-0 z-10 -mx-4 -mt-4 px-4 pt-4 bg-concreto-950/95 backdrop-blur-md flex items-center justify-between border-b border-concreto-800/80 pb-2.5 shrink-0">
+          <div className="absolute top-0 right-0 h-full w-[310px] bg-concreto-950/95 backdrop-blur-md border-l border-concreto-700/80 shadow-2xl flex flex-col p-4 gap-4 z-15 transition-transform duration-300 translate-x-0">
+
+            {/* Header do Drawer */}
+            <div className="flex items-center justify-between border-b border-concreto-800/80 pb-2.5 shrink-0">
               <span className="font-sans font-bold text-xs uppercase tracking-wider text-aco-100">Configurações</span>
               <button
                 onClick={() => setMenuAberto(false)}
@@ -874,6 +874,17 @@ export default function Visita() {
                 Fechar ✕
               </button>
             </div>
+
+            {/* Bloco de sliders/config, com rolagem PROPRIA (min-h-0 sem flex-1 -
+                pode encolher e rolar quando nao couber) - assim ele nunca rouba
+                espaco do Editor de Waypoints logo abaixo (flex-1: sempre recebe
+                o que sobrar, garantido, e' onde fica o seletor de "Sobreposicao
+                de Plantas" e o botao Salvar). Tentativa anterior colocava o
+                overflow-y-auto no drawer INTEIRO - isso fazia o flex-1 do editor
+                de waypoints colapsar pra altura zero (CSS: overflow no ancestral
+                de um flex-1/min-h-0 pode zerar o espaco distribuido pra ele),
+                sumindo o seletor de vistoria e o botao Salvar da tela. */}
+            <div className="min-h-0 overflow-y-auto flex flex-col gap-4 pr-1 -mr-1">
 
             {/* Banner de status de processamento automático */}
             {visita.status === 'processado' && (
@@ -1207,6 +1218,9 @@ export default function Visita() {
                   </p>
                 </div>
             </>
+
+            </div>
+            {/* fim do bloco de sliders/config com rolagem propria */}
 
             {/* Editor de Waypoints */}
             <div className="flex-1 min-h-0 flex flex-col">
