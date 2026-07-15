@@ -862,10 +862,10 @@ export default function Visita() {
 
         {/* GAVETA RETRÁTIL DE CONFIGURAÇÃO & EDITOR (DRAWER Z-INDEX 15) */}
         {menuAberto && (
-          <div className="absolute top-0 right-0 h-full w-[310px] bg-concreto-950/95 backdrop-blur-md border-l border-concreto-700/80 shadow-2xl flex flex-col p-4 gap-4 z-15 transition-transform duration-300 translate-x-0">
+          <div className="absolute top-0 right-0 h-full w-[310px] bg-concreto-950/95 backdrop-blur-md border-l border-concreto-700/80 shadow-2xl flex flex-col p-4 gap-4 z-15 transition-transform duration-300 translate-x-0 overflow-y-auto">
             
-            {/* Header do Drawer */}
-            <div className="flex items-center justify-between border-b border-concreto-800/80 pb-2.5">
+            {/* Header do Drawer - sticky (fica visivel mesmo rolando o painel) */}
+            <div className="sticky top-0 z-10 -mx-4 -mt-4 px-4 pt-4 bg-concreto-950/95 backdrop-blur-md flex items-center justify-between border-b border-concreto-800/80 pb-2.5 shrink-0">
               <span className="font-sans font-bold text-xs uppercase tracking-wider text-aco-100">Configurações</span>
               <button
                 onClick={() => setMenuAberto(false)}
