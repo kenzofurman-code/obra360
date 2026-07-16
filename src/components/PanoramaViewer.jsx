@@ -324,6 +324,10 @@ export default function PanoramaViewer({
     let lon = 0, lat = 0
     let isUserInteracting = false
     let onDownMouseX = 0, onDownMouseY = 0, onDownLon = 0, onDownLat = 0
+    // distancia total percorrida durante o gesto - separa "arrastar pra olhar ao redor"
+    // de "clique" (parado ou quase parado), igual ao mesmo padrao ja usado em
+    // PlantaViewer.jsx (totalDragDistRef) pro clique-no-trajeto.
+    let totalDragDist = 0
 
     const onPointerDown = (e) => {
       isUserInteracting = true
@@ -331,13 +335,28 @@ export default function PanoramaViewer({
       onDownMouseY = e.clientY
       onDownLon = lon
       onDownLat = lat
+      totalDragDist = 0
     }
     const onPointerMove = (e) => {
+      // guarda a posicao do mouse SEMPRE (mesmo sem estar arrastando) pro hover da
+      // fita abaixo (ver hoverFrameAtual/atualizarHoverFrame) - so' o giro da camera
+      // (lon/lat) depende de isUserInteracting.
+      mouseClientX = e.clientX
+      mouseClientY = e.clientY
       if (!isUserInteracting) return
+      totalDragDist = Math.max(totalDragDist, Math.hypot(e.clientX - onDownMouseX, e.clientY - onDownMouseY))
       lon = (onDownMouseX - e.clientX) * 0.15 + onDownLon
       lat = (e.clientY - onDownMouseY) * 0.15 + onDownLat
     }
-    const onPointerUp = () => { isUserInteracting = false }
+    const onPointerUp = () => {
+      isUserInteracting = false
+      // Clique (nao arrasto) sobre a fita com uma foto em destaque (ver bolinha azul-
+      // clara do hover) - pedido do Pedro em 2026-07-15: poder clicar na fita e pular
+      // direto pra aquele frame, igual ja funciona na planta baixa.
+      if (totalDragDist < 6 && hoverFrameAtual) {
+        fp.currentTime(hoverFrameAtual.t)
+      }
+    }
     const onWheel = (e) => {
       e.preventDefault()
       camera.fov = THREE.MathUtils.clamp(camera.fov + e.deltaY * 0.05, 30, 100)
@@ -353,11 +372,16 @@ export default function PanoramaViewer({
     const renderPos = { x: 0, y: 0, initialized: false }
     let lastTimeRibbon = 0
     let line3D = null
-    // marcadores azul-claro de onde cada FOTO (quadro do manifest) fica em cima da
-    // fita 3D - pedido do Pedro em 2026-07-15: "queria ver onde estão as fotos" pra
-    // ter uma referência visual de quantos/quais pontos de parada existem ao longo
-    // do trajeto, sem precisar abrir a planta baixa pra isso.
-    let pointsQuadros = null
+    // Marcador de foto sob o mouse: pedido do Pedro em 2026-07-15 - a 1ª versão
+    // desenhava TODAS as fotos na fita o tempo todo (poluía a foto 360°); a versão
+    // atual só destaca a foto mais próxima de onde o mouse está passando sobre a
+    // fita (raycasting contra line3D), dando noção de onde estão/distância entre
+    // elas sem cobrir a imagem, e permite clicar (ver onPointerUp acima) pra pular
+    // direto pra aquele frame.
+    let hoverMesh = null
+    let hoverFrameAtual = null // { t, x, y, ... } do quadro mais proximo do mouse, ou null
+    const raycasterFita = new THREE.Raycaster()
+    let mouseClientX = null, mouseClientY = null
 
     const atualizarPassarela = () => {
       const t_now = fp.currentTime()
@@ -449,43 +473,74 @@ export default function PanoramaViewer({
       geo.computeVertexNormals()
       geo.attributes.position.needsUpdate = true
       if (geo.index) geo.index.needsUpdate = true
+    }
 
-      // Marcadores de foto: um ponto por quadro do manifest, na MESMA transformação
-      // (escala/espelhar/rotação relativa a xc,yc) usada pros vértices da fita acima -
-      // assim eles ficam grudados na fita, sempre no lugar exato onde aquela foto foi
-      // tirada, mesmo quando o usuário ajusta ribbonScale/ribbonRotationOffset.
-      if (!pointsQuadros) {
-        const materialPontos = new THREE.PointsMaterial({
-          color: 0x93c5fd, // azul mais claro que o 0x3b82f6 da fita, conforme pedido
-          size: 4,
-          sizeAttenuation: false,
-          transparent: true,
-          depthWrite: false,
-        })
-        const geoPontos = new THREE.BufferGeometry()
-        pointsQuadros = new THREE.Points(geoPontos, materialPontos)
-        pointsQuadros.frustumCulled = false
-        pointsQuadros.renderOrder = 2 // acima da fita (1) e das esferas do panorama (0)
-        scene.add(pointsQuadros)
+    // Acha a foto mais proxima de onde o mouse esta passando sobre a fita (raycast
+    // contra o MESH da fita, nao contra um ponto por foto) - so' roda quando ha'
+    // posicao de mouse conhecida, chamado a cada frame do loop de render (ver
+    // animar() abaixo) depois de atualizarPassarela() ter deixado line3D atualizado.
+    const atualizarHoverFrame = () => {
+      if (!line3D || mouseClientX === null || quadrosRef.current.length === 0) {
+        hoverFrameAtual = null
+        if (hoverMesh) hoverMesh.visible = false
+        return
       }
-      pointsQuadros.material.opacity = Math.min(1, (lineOpacityRef.current / 100) + 0.15)
-
-      const posQuadros = []
-      const escalaPts = 22 * ribbonScaleRef.current
-      const radPts = THREE.MathUtils.degToRad(ribbonRotationRef.current)
+      const rect = renderer.domElement.getBoundingClientRect()
+      const ndcX = ((mouseClientX - rect.left) / rect.width) * 2 - 1
+      const ndcY = -(((mouseClientY - rect.top) / rect.height) * 2 - 1)
+      if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) {
+        hoverFrameAtual = null
+        if (hoverMesh) hoverMesh.visible = false
+        return
+      }
+      raycasterFita.setFromCamera({ x: ndcX, y: ndcY }, camera)
+      const hits = raycasterFita.intersectObject(line3D)
+      if (hits.length === 0) {
+        hoverFrameAtual = null
+        if (hoverMesh) hoverMesh.visible = false
+        return
+      }
+      const hitPoint = hits[0].point
+      const xc = renderPos.x
+      const yc = renderPos.y
+      const escala = 22 * ribbonScaleRef.current
+      const rad = THREE.MathUtils.degToRad(ribbonRotationRef.current)
+      let melhorDist = Infinity
+      let melhorQuadro = null
+      let melhorX = 0
+      let melhorZ = 0
       for (const q of quadrosRef.current) {
         if (!Number.isFinite(q?.x) || !Number.isFinite(q?.y)) continue
-        const rawDx = (q.x - xc) * escalaPts
+        const rawDx = (q.x - xc) * escala
         const dx0 = espelharCaminhoRef.current ? -rawDx : rawDx
-        const dy0 = (q.y - yc) * escalaPts
-        const dx = dx0 * Math.cos(radPts) - dy0 * Math.sin(radPts)
-        const dy = dx0 * Math.sin(radPts) + dy0 * Math.cos(radPts)
-        posQuadros.push(dx, -2.0, -dy) // ry=-2.0: um pouco acima da fita (-2.1) pra nao ter z-fighting
+        const dy0 = (q.y - yc) * escala
+        const dx = dx0 * Math.cos(rad) - dy0 * Math.sin(rad)
+        const dy = dx0 * Math.sin(rad) + dy0 * Math.cos(rad)
+        const rz = -dy
+        const dist = Math.hypot(dx - hitPoint.x, rz - hitPoint.z)
+        if (dist < melhorDist) { melhorDist = dist; melhorQuadro = q; melhorX = dx; melhorZ = rz }
       }
-      const geoPontos = pointsQuadros.geometry
-      geoPontos.setAttribute('position', new THREE.Float32BufferAttribute(posQuadros, 3))
-      geoPontos.attributes.position.needsUpdate = true
-      geoPontos.computeBoundingSphere()
+      if (!melhorQuadro) {
+        hoverFrameAtual = null
+        if (hoverMesh) hoverMesh.visible = false
+        return
+      }
+      hoverFrameAtual = melhorQuadro
+      if (!hoverMesh) {
+        const geoBolinha = new THREE.SphereGeometry(1.3, 16, 16)
+        const matBolinha = new THREE.MeshBasicMaterial({
+          color: 0x93c5fd, // azul mais claro que o 0x3b82f6 da fita, conforme pedido do Pedro
+          transparent: true,
+          opacity: 0.95,
+          depthWrite: false,
+        })
+        hoverMesh = new THREE.Mesh(geoBolinha, matBolinha)
+        hoverMesh.frustumCulled = false
+        hoverMesh.renderOrder = 2 // acima da fita (1) e das esferas do panorama (0)
+        scene.add(hoverMesh)
+      }
+      hoverMesh.visible = true
+      hoverMesh.position.set(melhorX, -2.0, melhorZ)
     }
 
     // --- Avanço automático (play) + loop de render ---
@@ -520,8 +575,13 @@ export default function PanoramaViewer({
       )
       camera.position.set(0, 0, 0)
       camera.lookAt(target)
+      // updateMatrixWorld explicito: o raycaster do hover (abaixo) precisa da matriz
+      // da camera ja refletindo o lookAt() acima - sem isso ela so' fica correta
+      // depois do proximo renderer.render(), um frame atrasada.
+      camera.updateMatrixWorld()
 
       try { atualizarPassarela() } catch (e) { /* ignora erros pontuais, nao trava o loop */ }
+      try { atualizarHoverFrame() } catch (e) { /* ignora erros pontuais, nao trava o loop */ }
 
       renderer.render(scene, camera)
       raf = requestAnimationFrame(animar)
@@ -554,9 +614,9 @@ export default function PanoramaViewer({
       geometry.dispose()
       matA.dispose()
       matB.dispose()
-      if (pointsQuadros) {
-        pointsQuadros.geometry.dispose()
-        pointsQuadros.material.dispose()
+      if (hoverMesh) {
+        hoverMesh.geometry.dispose()
+        hoverMesh.material.dispose()
       }
       renderer.dispose()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)
