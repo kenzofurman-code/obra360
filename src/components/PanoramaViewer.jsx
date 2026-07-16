@@ -527,7 +527,13 @@ export default function PanoramaViewer({
       }
       hoverFrameAtual = melhorQuadro
       if (!hoverMesh) {
-        const geoBolinha = new THREE.SphereGeometry(1.3, 16, 16)
+        // Esfera unitaria (raio 1) - o tamanho REAL vem do scale abaixo, recalculado
+        // a cada frame a partir da espessura atual da fita (lineThicknessRef), pra
+        // sempre ficar só um pouco maior que ela (~5%), nunca um tamanho fixo em
+        // unidades de cena. Bug corrigido 2026-07-15: raio fixo de 1.3 ficava GIGANTE
+        // perto da fita (halfWidth da fita e' só ~0.11 com a espessura padrao de 0.6x
+        // - a bolinha saia ~12x maior que a fita, cobrindo a foto toda).
+        const geoBolinha = new THREE.SphereGeometry(1, 16, 16)
         const matBolinha = new THREE.MeshBasicMaterial({
           color: 0x93c5fd, // azul mais claro que o 0x3b82f6 da fita, conforme pedido do Pedro
           transparent: true,
@@ -539,6 +545,10 @@ export default function PanoramaViewer({
         hoverMesh.renderOrder = 2 // acima da fita (1) e das esferas do panorama (0)
         scene.add(hoverMesh)
       }
+      // raio = metade da largura da fita (halfWidth) + 5%, pra bolinha ficar "só um
+      // pouco maior que a fita" (pedido do Pedro) em vez de um tamanho fixo.
+      const halfWidthAtual = 0.18 * lineThicknessRef.current
+      hoverMesh.scale.setScalar(halfWidthAtual * 1.05)
       hoverMesh.visible = true
       hoverMesh.position.set(melhorX, -2.0, melhorZ)
     }
