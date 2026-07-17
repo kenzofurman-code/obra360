@@ -464,6 +464,69 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       `distância = altura_câmera / tan(ângulo_elevação)`) fica pra depois
       deste fluxo estar validado ponta a ponta.
 
+19. **Teste de Depth-Anything V2 Small como alternativa/fallback ao RANSAC
+    de landmarks — 2026-07-16, Pedro pediu pra testar depois de eu sugerir
+    como possível solução pro maior gap conhecido do item 16
+    (`medir_por_epipolar_fallback()` não implementado, cliques em regiões de
+    mapa esparso simplesmente falham).**
+    - Ideia: Depth-Anything estima profundidade densa por pixel a partir de
+      UMA FOTO SÓ (sem precisar de landmarks/matching entre keyframes). Como
+      cada quadro já tem `pose_raw`, dava pra usar profundidade + pose pra
+      obter o ponto 3D de qualquer clique direto — mas na prática, pra 2
+      pontos de uma MEDIÇÃO típica (largura de porta/janela/rachadura) que
+      normalmente aparecem na MESMA foto, nem precisa de pose_raw/mundo: os
+      2 pontos retroprojetados no espaço da própria câmera já dão a
+      distância entre eles. Isso é mais simples que todo o pipeline SLAM
+      atual — não usa `mapa.msg`, não usa RANSAC, não depende de quantos
+      keyframes existem perto do clique.
+    - **Problema identificado antes de testar**: as fotos do worker.py são
+      EQUIRETANGULARES (360°), mas Depth-Anything foi treinado em fotos de
+      câmera normal (pinhole) — rodar direto na equiretangular daria
+      profundidade geometricamente errada (distorção forte, principalmente
+      longe do "equador" da imagem). Fix: novo arquivo
+      `equirect_perspectiva.py` — `recortar_perspectiva(img, u_centro,
+      v_centro, fov_h_graus, tamanho_saida)` gera um recorte PINHOLE
+      retilíneo centrado em qualquer direção, usando a MESMA convenção
+      (u,v)→(longitude,latitude) de `raio_do_clique()` em
+      `medir_panorama.py` (não inventa mais uma convenção divergente em
+      cima das que já existem). Devolve também a matriz intrínseca `K` do
+      recorte, necessária pra depois retroprojetar (pixel, profundidade) em
+      ponto 3D.
+    - **Validado com dados reais nesta sessão** (não só revisão de código):
+      rodei `recortar_perspectiva()` contra o `quadro_0080.jpg` real (o
+      mesmo já usado nos testes do item 16) — o recorte resultante tem
+      linhas retas (junta do teto, quinas de parede) saindo RETAS, sem a
+      curvatura característica da distorção equiretangular, confirmando que
+      a reprojeção geométrica está correta. Também validei
+      `retroprojetar()`/`amostrar_profundidade()` com um teste sintético:
+      2 pontos 3D conhecidos, projetados pela mesma fórmula pinhole,
+      retroprojetados de volta — bateram exatos (erro < 1e-6), confirmando
+      que a matemática de volta a 3D está correta.
+    - **NÃO validado ainda: a parte que realmente importa (o modelo em
+      si)**. Este sandbox de desenvolvimento bloqueia `huggingface.co` (e
+      todos os mirrors alternativos testados: `cdn-lfs.huggingface.co`,
+      `modelscope.cn`, `gitee.com`, `sourceforge.net`) — só `pypi.org` e
+      `github.com` (páginas HTML, não os assets de release) estão
+      liberados. Não consegui baixar nenhum checkpoint do Depth-Anything V2
+      pra rodar de verdade. Novo arquivo `testar_depth_anything.py` está
+      pronto (recorta a foto, roda o modelo via `transformers`, retroprojeta
+      2 pontos clicados, compara com uma distância real opcional) mas
+      **precisa ser rodado na máquina do Pedro** (`pip install torch
+      transformers pillow`), não neste sandbox.
+    - **Pendências reais antes de confiar nisso pra produção**: (1) rodar o
+      script de verdade contra fotos reais e comparar com trena, do mesmo
+      jeito que fizemos com PSNR/SSIM pro ESPCN — não aceitar "parece certo"
+      como validação; (2) confirmar se o checkpoint métrico
+      (`Metric-Hypersim-Small`, treinado em cenas de interior) generaliza
+      pra concreto bruto/pouca luz de obra em construção, ou se sofre do
+      mesmo problema de domínio que o upscale (item 17); (3) o exact model
+      id no Hugging Face não foi confirmado por mim (sem acesso pra
+      conferir) — só um palpite educado no código, sinalizado com comentário
+      pra ajustar se o `transformers` reclamar; (4) mesmo que funcione bem,
+      só serve pra pares de pontos visíveis na MESMA foto — não substitui
+      o SLAM pra medições entre pontos distantes/vistos de ângulos muito
+      diferentes.
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
