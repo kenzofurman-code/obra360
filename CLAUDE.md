@@ -713,6 +713,36 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       genuinamente diferentes — por isso o por-ponto é o principal).
       Scripts/overlays de validação em `teste_medicao_e_resolucao/`.
 
+22. **Fim do Cloudflare Stream: upload do site direto pro R2 + fila da VPS
+    (2026-07-17, noite).** Decisão do Pedro: "não vamos mais usar o Cloudflare
+    Stream, e sim o storage". Fecha o GAP 3 do worker.py (a fila `na_fila`
+    nunca era alimentada pelo site).
+    - `api_medicao.py` ganhou `/upload/iniciar` (cria multipart no R2 e
+      devolve todas as presigned URLs de parte — 100MB/parte, exp. 24h),
+      `/upload/concluir` e `/upload/abortar`. Credenciais R2 só no servidor
+      (mesmas env vars do worker; no Coolify precisam ser configuradas).
+      `R2_ENDPOINT_URL`/`UPLOAD_PARTE_TAMANHO_MB` são overrides só de teste.
+    - `Upload.jsx`: tus/Stream removidos; fatia o arquivo, PUT por parte com
+      retry (3x), progresso por bytes, aborta a sessão multipart em caso de
+      erro. Ao final `criarVisita({video_r2_key, status:'na_fila',
+      hls_url:null})` — o worker da VPS baixa do R2 e processa sozinho.
+    - `visitas.js::criarVisita` aceita `video_r2_key`/`status` (defaults
+      antigos preservados). `Visita.jsx` ganhou banners de `na_fila`/
+      `processando`/`erro`.
+    - **Infra necessária (uma vez)**: (a) Coolify → Environment Variables da
+      API: R2_BUCKET_NAME/R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY
+      + Redeploy; (b) CORS do bucket R2 (painel Cloudflare → R2 → bucket →
+      Settings → CORS policy): AllowedOrigins=[dominio do site no Vercel],
+      AllowedMethods=[GET,PUT], AllowedHeaders=[*], **ExposeHeaders=[ETag]**
+      (sem ETag exposto o navegador não consegue montar a lista de partes).
+    - **Validação**: endpoints exercitados contra S3 local (moto) — iniciar/
+      concluir/abortar ok; o PUT pré-assinado o moto não implementa direito
+      (500 mesmo em us-east-1; limitação conhecida do emulador), e o sandbox
+      bloqueia o R2 real por proxy. **Falta o teste real no navegador**
+      (primeiro com um vídeo PEQUENO): upload → na_fila → worker da VPS pega
+      → processado. Se a parte falhar com erro de ETag/CORS, é o item (b)
+      acima. esbuild ok em Upload/Visita/visitas.
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita

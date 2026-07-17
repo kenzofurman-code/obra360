@@ -6,7 +6,9 @@ import { getObra } from '../lib/obras'
 import { getLocal } from '../lib/locais'
 import { ref, uploadBytes, getDownloadURL } from 'firebase/storage'
 import { storage } from '../lib/firebase'
-import * as tus from 'tus-js-client'
+// tus/Cloudflare Stream removidos 2026-07-17 - video bruto agora sobe
+// DIRETO pro R2 em partes (presigned multipart via api_medicao.py na VPS)
+// e a vistoria nasce com status='na_fila' pro worker da VPS processar.
 import PlantaViewer from '../components/PlantaViewer'
 
 const PAVIMENTOS = [
@@ -157,101 +159,121 @@ export default function Upload() {
     return downloadURL
   }
 
-  // 1. Upload Direto para Cloudflare Stream via Tus + Planta Baixa
+  // 1. Upload direto pro R2 (multipart presigned via api_medicao.py) + Planta
+  // Substitui o fluxo Cloudflare Stream/tus (2026-07-17). O arquivo e' fatiado
+  // em partes de ~100MB; cada parte vai num PUT direto pro bucket (URL
+  // assinada gerada na VPS - credenciais do R2 nunca chegam aqui); no final a
+  // vistoria nasce com video_r2_key + status='na_fila' e o worker da VPS
+  // baixa/processa sozinho. Retry por parte (3 tentativas) - conexao caindo
+  // no meio de um envio de dezenas de GB e' esperado, nao excecao.
+  const API_UPLOAD = import.meta.env.VITE_API_MEDICAO_URL || null
+  const API_UPLOAD_KEY = import.meta.env.VITE_MEDICAO_API_KEY || null
+
+  async function apiUpload(caminho, corpo) {
+    const headers = { 'Content-Type': 'application/json' }
+    if (API_UPLOAD_KEY) headers['X-Api-Key'] = API_UPLOAD_KEY
+    const r = await fetch(`${API_UPLOAD}${caminho}`, {
+      method: 'POST', headers, body: JSON.stringify(corpo),
+    })
+    const json = await r.json().catch(() => ({}))
+    if (!r.ok || json.erro) throw new Error(json.erro || `HTTP ${r.status} em ${caminho}`)
+    return json
+  }
+
+  async function enviarParte(url, blob, tentativas = 3) {
+    for (let t = 1; t <= tentativas; t++) {
+      try {
+        const r = await fetch(url, { method: 'PUT', body: blob })
+        if (!r.ok) throw new Error(`HTTP ${r.status}`)
+        const etag = r.headers.get('ETag')
+        if (!etag) {
+          throw new Error('Resposta sem header ETag - confira o CORS do bucket ' +
+            'R2 (precisa de ExposeHeaders: ETag).')
+        }
+        return etag
+      } catch (e) {
+        if (t === tentativas) throw e
+        await new Promise((res) => setTimeout(res, 3000 * t))
+      }
+    }
+  }
+
   async function iniciarUploadDireto() {
     if (!videoFile) {
       setErro('Selecione um arquivo de vídeo .mp4 para fazer o upload.')
       return
     }
+    if (!API_UPLOAD) {
+      setErro('API de upload não configurada (VITE_API_MEDICAO_URL).')
+      return
+    }
     setUploading(true)
     setErro('')
-    setUploadStatus('Solicitando credenciais de upload seguro...')
+    setUploadStatus('Preparando envio direto para o armazenamento...')
 
+    let sessao = null
     try {
-      // Requisita URL assinada do Cloudflare a partir do nosso backend serverless
-      const response = await fetch('/api/get-upload-url', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          fileSize: videoFile.size,
-        }),
+      sessao = await apiUpload('/upload/iniciar', {
+        nome_arquivo: videoFile.name,
+        tamanho: videoFile.size,
+        content_type: videoFile.type || 'video/mp4',
       })
-      
-      if (!response.ok) {
-        const errData = await response.json()
-        throw new Error(errData.error || 'Erro ao gerar credenciais de upload.')
+      const { chave, upload_id, parte_tamanho, urls } = sessao
+      const partes = []
+      let enviados = 0
+      for (let n = 0; n < urls.length; n++) {
+        const ini = n * parte_tamanho
+        const blob = videoFile.slice(ini, Math.min(ini + parte_tamanho, videoFile.size))
+        const etag = await enviarParte(urls[n], blob)
+        partes.push({ numero: n + 1, etag })
+        enviados += blob.size
+        const pct = Math.round((enviados / videoFile.size) * 100)
+        setUploadProgress(pct)
+        setUploadStatus(`Enviando vídeo: ${pct}% (parte ${n + 1}/${urls.length})`)
       }
-      
-      const { uploadURL, uid, accountId } = await response.json()
-      setUploadStatus('Iniciando envio para o Cloudflare Stream...')
+      setUploadStatus('Concluindo envio no armazenamento...')
+      const fim = await apiUpload('/upload/concluir', { chave, upload_id, partes })
 
-      const upload = new tus.Upload(videoFile, {
-        endpoint: uploadURL,
-        chunkSize: 50 * 1024 * 1024, // 50MB (múltiplo de 256KB exigido pelo Cloudflare)
-        retryDelays: [0, 3000, 5000, 10000, 20000],
-        onError: function (error) {
-          console.error('Erro no upload Tus:', error)
-          setErro('Falha no envio do vídeo: ' + error.message)
-          setUploading(false)
-        },
-        onProgress: function (bytesUploaded, bytesTotal) {
-          const percentage = ((bytesUploaded / bytesTotal) * 100).toFixed(0)
-          setUploadProgress(parseInt(percentage))
-          setUploadStatus(`Enviando vídeo: ${percentage}%`)
-        },
-        onSuccess: async function () {
-          setUploadStatus('Vídeo enviado! Enviando imagem da planta baixa...')
+      // Planta: fluxo scoped reaproveita a URL do Local; avulso sobe aqui.
+      setUploadStatus('Vídeo enviado! Salvando planta baixa...')
+      let finalPlantaUrl = localId ? (local?.planta_url || null) : (form.planta_url.trim() || null)
+      try {
+        if (!localId && plantaFile) {
+          finalPlantaUrl = await uploadPlanta(plantaFile)
+        }
+      } catch (uploadError) {
+        console.error('Erro ao subir planta:', uploadError)
+        setErro('Vídeo enviado, mas erro ao salvar imagem da planta baixa: ' + uploadError.message)
+        setUploading(false)
+        return
+      }
 
-          // Fluxo scoped: a planta ja' pertence ao Local (Locais.jsx cuida do
-          // upload dela) - nao ha' o que subir aqui, so' reaproveitar a URL.
-          let finalPlantaUrl = localId ? (local?.planta_url || null) : (form.planta_url.trim() || null)
-          try {
-            if (!localId && plantaFile) {
-              finalPlantaUrl = await uploadPlanta(plantaFile)
-            }
-          } catch (uploadError) {
-            console.error('Erro ao subir planta:', uploadError)
-            setErro('Vídeo enviado, mas erro ao salvar imagem da planta baixa: ' + uploadError.message)
-            setUploading(false)
-            return
-          }
-
-          setUploadStatus('Salvando vistoria no Firebase...')
-
-          // Formatos de URLs geradas automaticamente pelo Cloudflare Stream
-          const hlsUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/manifest/video.m3u8`
-          const thumbnailUrl = `https://customer-${accountId}.cloudflarestream.com/${uid}/thumbnails/thumbnail.jpg`
-
-          try {
-            const id = await criarVisita({
-              pavimento: localId ? (local?.nome || form.pavimento) : form.pavimento,
-              obra_id: obraId || null,
-              local_id: localId || null,
-              data_vistoria: new Date(`${dataVistoria}T12:00:00`),
-              hls_url: hlsUrl,
-              thumbnail_url: thumbnailUrl,
-              planta_url: finalPlantaUrl,
-              duracao_segundos: parseInt(form.duracao_segundos) || 0,
-              waypoints: waypoints,
-              is_imported: waypoints.length > 0,
-              ancora1,
-            })
-            navigate(`/visita/${id}`)
-          } catch (e) {
-            setErro('Vídeo enviado, mas falha ao salvar visita no Firebase: ' + e.message)
-            setUploading(false)
-          }
-        },
+      setUploadStatus('Colocando vistoria na fila de processamento...')
+      const id = await criarVisita({
+        pavimento: localId ? (local?.nome || form.pavimento) : form.pavimento,
+        obra_id: obraId || null,
+        local_id: localId || null,
+        data_vistoria: new Date(`${dataVistoria}T12:00:00`),
+        hls_url: null, // sem Stream - o tour vem dos panoramas gerados pelo worker
+        thumbnail_url: null,
+        planta_url: finalPlantaUrl,
+        duracao_segundos: parseInt(form.duracao_segundos) || 0,
+        waypoints: waypoints,
+        is_imported: waypoints.length > 0,
+        ancora1,
+        video_r2_key: fim.video_r2_key,
+        status: 'na_fila',
       })
-
-      // Inicia o upload
-      upload.start()
-
+      navigate(`/visita/${id}`)
     } catch (e) {
-      setErro('Erro no processo de upload: ' + e.message)
+      setErro('Erro no envio do vídeo: ' + (e.message || e))
       setUploading(false)
+      // melhor esforco: liberar as partes ja enviadas no R2
+      if (sessao?.chave && sessao?.upload_id) {
+        apiUpload('/upload/abortar', {
+          chave: sessao.chave, upload_id: sessao.upload_id,
+        }).catch(() => {})
+      }
     }
   }
 

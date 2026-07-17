@@ -76,6 +76,10 @@ export async function criarVisita({
   // drawer de historico/comparacao (item 4.5). Ambos opcionais por enquanto
   // pra nao quebrar vistorias antigas criadas antes dessa mudanca.
   obra_id = null, local_id = null, data_vistoria = null,
+  // Fluxo novo (2026-07-17, fim do Cloudflare Stream): video bruto no R2 +
+  // fila do worker na VPS. video_r2_key aponta pro objeto no bucket;
+  // status 'na_fila' faz o worker.py --poll pegar a vistoria sozinho.
+  video_r2_key = null, status = 'ready',
 }) {
   const ref = await addDoc(collection(db, COL), {
     pavimento,
@@ -96,7 +100,8 @@ export async function criarVisita({
     passarela_escala,                 // Escala visual da passarela 3D (cosmetico)
     passarela_rotacao,                // Rotacao visual da passarela 3D (cosmetico)
     cone_frame_offset,                // Ajuste visual do cone de direcao (cosmetico)
-    status: 'ready',
+    video_r2_key,
+    status,
     data: serverTimestamp(),
   })
   return ref.id

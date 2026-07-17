@@ -49,6 +49,7 @@
 import argparse
 import hashlib
 import os
+import re
 import time
 
 import numpy as np
@@ -230,6 +231,110 @@ def calibrar():
     except ValueError as e:
         return jsonify(sucesso=False, motivo=str(e)), 200
     return jsonify(sucesso=True, escala_slam_metros=escala, distancia_slam=dist_slam)
+
+
+# ─── Upload de video direto pro R2 (multipart presigned) ────────────────────
+# 2026-07-17: fim do Cloudflare Stream - o video bruto sobe DIRETO do
+# navegador pro R2 em partes (presigned URLs geradas aqui; as credenciais do
+# R2 nunca vao pro frontend). Ao concluir, o Upload.jsx cria a vistoria com
+# video_r2_key + status='na_fila' e o worker.py --poll (mesma VPS) processa.
+# Requisito de infra: CORS do bucket R2 precisa permitir PUT do dominio do
+# site e expor o header ETag (senao o navegador nao consegue montar a lista
+# de partes pro /upload/concluir).
+
+# 100MB/parte -> 46.8GB = ~468 partes (max S3: 10000; minimo por parte 5MB).
+# Env var so' pra testes (moto/werkzeug limita o corpo do PUT) - producao usa o padrao.
+PARTE_TAMANHO = int(os.environ.get('UPLOAD_PARTE_TAMANHO_MB', '100')) * 1024 * 1024
+PRESIGN_EXPIRA_S = 24 * 3600       # upload de dezenas de GB em conexao lenta leva horas
+
+
+def _r2_client():
+    """Cliente S3 do R2 - MESMAS variaveis de ambiente do worker.py/
+    gerar_quadros.py (no Coolify: configurar nas Environment Variables)."""
+    import boto3
+    bucket = os.environ.get('R2_BUCKET_NAME')
+    account = os.environ.get('R2_ACCOUNT_ID')
+    key = os.environ.get('R2_ACCESS_KEY_ID')
+    secret = os.environ.get('R2_SECRET_ACCESS_KEY')
+    if not (bucket and key and secret and (account or os.environ.get('R2_ENDPOINT_URL'))):
+        raise RuntimeError("R2_BUCKET_NAME/R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/"
+                           "R2_SECRET_ACCESS_KEY nao configuradas no ambiente da API.")
+    # R2_ENDPOINT_URL: override opcional (testes com S3 local/moto; producao
+    # nao precisa - o endpoint padrao do R2 e' derivado do account id).
+    endpoint = os.environ.get('R2_ENDPOINT_URL') or f'https://{account}.r2.cloudflarestorage.com'
+    s3 = boto3.client('s3', aws_access_key_id=key, aws_secret_access_key=secret,
+                       endpoint_url=endpoint, region_name='auto')
+    return s3, bucket
+
+
+@app.route('/upload/iniciar', methods=['POST'])
+def upload_iniciar():
+    erro_auth = _checar_api_key()
+    if erro_auth:
+        return erro_auth
+    body = request.get_json(force=True) or {}
+    nome = body.get('nome_arquivo') or 'video.mp4'
+    tamanho = int(body.get('tamanho') or 0)
+    if tamanho <= 0:
+        return jsonify(erro="Informe 'tamanho' (bytes) do arquivo."), 400
+    n_partes = max(1, -(-tamanho // PARTE_TAMANHO))  # ceil
+    if n_partes > 10000:
+        return jsonify(erro=f"Arquivo grande demais ({n_partes} partes > 10000)."), 400
+    nome_seguro = re.sub(r'[^A-Za-z0-9._-]', '_', nome)[-80:]
+    chave = f"videos/{int(time.time())}_{nome_seguro}"
+    try:
+        s3, bucket = _r2_client()
+        mp = s3.create_multipart_upload(Bucket=bucket, Key=chave,
+                                         ContentType=body.get('content_type') or 'video/mp4')
+        upload_id = mp['UploadId']
+        urls = [s3.generate_presigned_url(
+                    'upload_part',
+                    Params=dict(Bucket=bucket, Key=chave, UploadId=upload_id,
+                                PartNumber=n + 1),
+                    ExpiresIn=PRESIGN_EXPIRA_S)
+                for n in range(n_partes)]
+    except Exception as e:
+        return jsonify(erro=f"Falha ao iniciar upload no R2: {e}"), 500
+    return jsonify(chave=chave, upload_id=upload_id,
+                    parte_tamanho=PARTE_TAMANHO, urls=urls)
+
+
+@app.route('/upload/concluir', methods=['POST'])
+def upload_concluir():
+    erro_auth = _checar_api_key()
+    if erro_auth:
+        return erro_auth
+    body = request.get_json(force=True) or {}
+    chave, upload_id, partes = body.get('chave'), body.get('upload_id'), body.get('partes')
+    if not (chave and upload_id and partes):
+        return jsonify(erro="Informe chave, upload_id e partes [{numero, etag}]."), 400
+    try:
+        s3, bucket = _r2_client()
+        s3.complete_multipart_upload(
+            Bucket=bucket, Key=chave, UploadId=upload_id,
+            MultipartUpload=dict(Parts=[
+                dict(PartNumber=int(p['numero']), ETag=p['etag']) for p in
+                sorted(partes, key=lambda p: int(p['numero']))]))
+    except Exception as e:
+        return jsonify(erro=f"Falha ao concluir upload no R2: {e}"), 500
+    return jsonify(sucesso=True, video_r2_key=chave)
+
+
+@app.route('/upload/abortar', methods=['POST'])
+def upload_abortar():
+    erro_auth = _checar_api_key()
+    if erro_auth:
+        return erro_auth
+    body = request.get_json(force=True) or {}
+    chave, upload_id = body.get('chave'), body.get('upload_id')
+    if not (chave and upload_id):
+        return jsonify(erro="Informe chave e upload_id."), 400
+    try:
+        s3, bucket = _r2_client()
+        s3.abort_multipart_upload(Bucket=bucket, Key=chave, UploadId=upload_id)
+    except Exception as e:
+        return jsonify(erro=f"Falha ao abortar upload: {e}"), 500
+    return jsonify(sucesso=True)
 
 
 @app.route('/saude', methods=['GET'])

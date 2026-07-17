@@ -1116,6 +1116,38 @@ export default function Visita() {
                 espaco garantido pro flex-1 do Editor de Waypoints abaixo. */}
             <div className="shrink-0 max-h-[48vh] overflow-y-auto flex flex-col gap-4 pr-1 -mr-1">
 
+            {/* Fila da VPS (fluxo novo 2026-07-17): vistoria enviada pro R2
+                aguardando/em processamento pelo worker. Sem hls_url (Stream
+                morreu) e sem manifest_url ainda - avisa em vez de mostrar um
+                player vazio. A pagina atualiza no proximo reload apos o worker
+                gravar status='processado'. */}
+            {(visita.status === 'na_fila' || visita.status === 'processando') && (
+              <div className="flex items-center gap-2 bg-yellow-500/15 border border-yellow-500/40 rounded-lg px-3 py-2 mb-3">
+                <span className="text-yellow-400 text-lg">{visita.status === 'na_fila' ? '⏳' : '⚙️'}</span>
+                <div>
+                  <p className="text-yellow-300 text-xs font-semibold font-mono">
+                    {visita.status === 'na_fila' ? 'Na fila de processamento' : 'Processando na VPS...'}
+                  </p>
+                  <p className="text-yellow-400/70 text-[10px] font-mono">
+                    O tour 360°, trajetória e medição aparecem aqui quando o processamento
+                    terminar (~1-2h). Recarregue a página pra atualizar.
+                  </p>
+                </div>
+              </div>
+            )}
+            {visita.status === 'erro' && (
+              <div className="flex items-center gap-2 bg-red-500/15 border border-red-500/40 rounded-lg px-3 py-2 mb-3">
+                <span className="text-red-400 text-lg">✕</span>
+                <div>
+                  <p className="text-red-300 text-xs font-semibold font-mono">Falha no processamento</p>
+                  <p className="text-red-400/70 text-[10px] font-mono">
+                    O worker registrou um erro nesta vistoria - ver logs do servidor
+                    (journalctl -u obra360-worker) pra causa e reprocessar.
+                  </p>
+                </div>
+              </div>
+            )}
+
             {/* Banner de status de processamento automático */}
             {visita.status === 'processado' && (
               <div className="flex items-center gap-2 bg-green-500/20 border border-green-500/40 rounded-lg px-3 py-2 mb-3">

@@ -7,3 +7,4 @@ msgpack
 numpy
 scipy
 gunicorn
+boto3
