@@ -208,6 +208,34 @@ def subir_json_r2(dados_dict, chave):
     return True
 
 
+def subir_arquivo_r2(caminho_local, chave, content_type='application/octet-stream'):
+    """Sobe um arquivo binario qualquer (ex.: mapa.msg) pro R2, mesmo
+    bucket/credenciais dos panoramas/waypoints. Retorna True se subiu, False
+    se o R2 nao estiver configurado.
+
+    Adicionado 2026-07-16 (feature de medicao no site, ver CLAUDE.md): ate
+    aqui o mapa.msg do stella_vslam so' ficava numa pasta temporaria (nunca
+    excluida por regra, mas tambem nunca persistida de verdade em lugar
+    nenhum acessivel depois que o worker termina) - a API de medicao (nova,
+    api_medicao.py) precisa buscar esse arquivo por vistoria depois do
+    processamento, entao ele precisa estar em algum storage permanente.
+    Mesmo padrao dos panoramas/waypoints: sobe pro R2, grava so' a URL no
+    Firestore."""
+    bucket = os.environ.get('R2_BUCKET_NAME')
+    account = os.environ.get('R2_ACCOUNT_ID')
+    key = os.environ.get('R2_ACCESS_KEY_ID')
+    secret = os.environ.get('R2_SECRET_ACCESS_KEY')
+    if not (bucket and account and key and secret):
+        return False
+    import boto3
+    s3 = boto3.client('s3', aws_access_key_id=key, aws_secret_access_key=secret,
+                       endpoint_url=f'https://{account}.r2.cloudflarestorage.com',
+                       region_name='auto')
+    with open(caminho_local, 'rb') as f:
+        s3.put_object(Bucket=bucket, Key=chave, Body=f, ContentType=content_type)
+    return True
+
+
 def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=None,
                      upscale_metodo=None, upscale_escala=2):
     bucket = os.environ.get('R2_BUCKET_NAME')
@@ -297,6 +325,7 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
         # 2. Trajetoria bruta: tenta SLAM (alta precisao), cai para odometria leve
         traj_tum, mapa_msg = rodar_slam_se_disponivel(video_path, tmp_dir)
         t0 = _marcar(t0, "2. SLAM (rodar_slam.py, Docker) ou deteccao de fallback")
+        mapa_r2_key = None
         if traj_tum:
             print("[SLAM] Convertendo trajetoria TUM -> raw_waypoints...")
             raw_waypoints = tum_para_raw_waypoints(traj_tum)
@@ -306,10 +335,22 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
             print(f"[SLAM] Trajetoria SLAM: {len(raw_waypoints)} poses -> {raw_json}")
             if mapa_msg:
                 # NUNCA excluir (regra do handoff) - alimenta medir_panorama.py e o
-                # mapa persistente futuro (Fase 4). Guarda ao lado dos waypoints por
-                # enquanto; upload/persistencia de longo prazo fica pra quando essa
-                # feature for exposta no produto.
+                # mapa persistente futuro (Fase 4). Sobe pro R2 (feature de medicao
+                # no site, 2026-07-16) pra api_medicao.py conseguir buscar depois
+                # que esta pasta temporaria for embora - ver subir_arquivo_r2.
                 print(f"[SLAM] mapa.msg disponivel em: {mapa_msg} (nao excluir)")
+                mapa_r2_key = f"{visita_id}/mapa.msg"
+                try:
+                    if subir_arquivo_r2(mapa_msg, mapa_r2_key):
+                        print(f"[SLAM] mapa.msg enviado ao R2: {mapa_r2_key}")
+                    else:
+                        print("[AVISO] R2 nao configurado - mapa.msg NAO foi enviado "
+                              "(feature de medicao ficara indisponivel pra esta vistoria).")
+                        mapa_r2_key = None
+                except Exception as e:
+                    print(f"[AVISO] Falha ao subir mapa.msg pro R2 ({e}) - feature de "
+                          "medicao ficara indisponivel pra esta vistoria.")
+                    mapa_r2_key = None
             t0 = _marcar(t0, "2.1 Conversao TUM -> raw_waypoints")
         else:
             raw_json = os.path.join(tmp_dir, 'trajetoria_bruta.json')
@@ -403,6 +444,12 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
         elif manifest_path:
             print("[AVISO] R2_PUBLIC_URL nao definido - manifest_url nao foi salvo no Firestore "
                   f"(panoramas estao em {manifest_path}, so localmente/no bucket).")
+
+        # mapa_url (feature de medicao, 2026-07-16) - so' existe se o SLAM rodou E o
+        # upload pro R2 deu certo (ver bloco 2 acima). Sem isso, a API de medicao
+        # (api_medicao.py) nao tem de onde buscar os landmarks dessa vistoria.
+        if mapa_r2_key and r2_public_url:
+            dados['mapa_url'] = f"{r2_public_url}/{mapa_r2_key}"
 
         # BUG ENCONTRADO E CORRIGIDO 2026-07-16 (Pedro reparou que os pontos/
         # marcadores nao apareciam no site apos rodar worker.py): o dict

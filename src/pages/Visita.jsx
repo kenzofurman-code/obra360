@@ -56,6 +56,19 @@ export default function Visita() {
   // Ajuste do cone de FOV relativo ao frame/foto atual (independente do headingOffset,
   // que gira o mapa inteiro) - ver comentario em PlantaViewer.jsx.
   const [coneFrameOffset, setConeFrameOffset] = useState(0)
+  // --- Medição (feature nova, 2026-07-16 - ver api_medicao.py / PanoramaViewer.jsx) ---
+  // Só disponível pra vistorias com manifest_url (fotos 360°) E mapa_url (mapa 3D do
+  // SLAM subido pro R2 pelo worker.py) - vistorias antigas ou sem SLAM não tem mapa_url,
+  // o botão fica desabilitado nesse caso (ver JSX abaixo).
+  const [modoMedicao, setModoMedicao] = useState(false)
+  const [modoCalibrar, setModoCalibrar] = useState(false)
+  const [larguraCalibracaoInput, setLarguraCalibracaoInput] = useState('') // string controlada do input
+  const [resultadoMedicaoAtual, setResultadoMedicaoAtual] = useState(null) // último resultado, pra exibir no painel
+  // URL da API de medição (Flask, ver api_medicao.py) - roda na VPS (mesma do
+  // worker.py --poll, ver obra360_hosting_decision). Configurar VITE_API_MEDICAO_URL
+  // no .env do frontend (Vercel) apontando pra ela, ex.: http://<ip-vps>:8090 -
+  // sem isso, o modo medição fica visível mas retorna erro claro ao clicar.
+  const apiMedicaoUrl = import.meta.env.VITE_API_MEDICAO_URL || null
   // Altura/largura da pagina do PDF da planta (salvo pelo worker.py via pdf_extractor.
   // get_page_aspect) - sem isso a rotacao/escala distorce a trajetoria em paginas
   // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
@@ -369,6 +382,45 @@ export default function Visita() {
     setTimeout(() => setToast(null), 3000)
   }
 
+  // Erro local do PanoramaViewer (sem pose_raw, sem mapa_url, sem API configurada,
+  // etc.) - detectado ANTES de chamar api_medicao.py.
+  const onErroMedicao = useCallback((msg) => {
+    mostrarToast(msg, 'erro')
+  }, [])
+
+  // Resposta de api_medicao.py (/medir ou /calibrar) - ver PanoramaViewer.jsx::
+  // tentarClicarMedicao. calibrando indica qual dos dois endpoints foi chamado.
+  const onResultadoMedicao = useCallback(async (resultado, { calibrando }) => {
+    if (calibrando) {
+      if (!resultado.sucesso) {
+        mostrarToast(`Falha ao calibrar: ${resultado.motivo || 'medição inconsistente'}`, 'erro')
+        return
+      }
+      try {
+        await atualizarVisita(id, { escala_slam_metros: resultado.escala_slam_metros })
+        setVisita((v) => (v ? { ...v, escala_slam_metros: resultado.escala_slam_metros } : v))
+        mostrarToast(`Calibrado! Escala: ${resultado.escala_slam_metros.toFixed(4)} m/unidade SLAM.`)
+        setModoCalibrar(false)
+      } catch (e) {
+        mostrarToast('Calibração calculada, mas falhou ao salvar no banco.', 'erro')
+      }
+      return
+    }
+    if (!resultado.sucesso) {
+      mostrarToast(`Medição falhou: ${resultado.motivo || 'pontos inconsistentes'}`, 'erro')
+      setResultadoMedicaoAtual(null)
+      return
+    }
+    setResultadoMedicaoAtual(resultado)
+    if (resultado.distancia_m !== undefined) {
+      mostrarToast(`Distância: ${resultado.distancia_m.toFixed(2)} m`)
+    } else {
+      mostrarToast(
+        `Distância: ${resultado.distancia_slam.toFixed(3)} unid. SLAM (sem calibração - use "Calibrar" pra converter em metros)`
+      )
+    }
+  }, [id])
+
   // Funções de Controle do Player de Vídeo
   const togglePlay = useCallback(() => {
     if (!player) return
@@ -676,6 +728,14 @@ export default function Visita() {
               espelharCaminho={espelharCaminho}
               ribbonScale={ribbonScale}
               ribbonRotationOffset={ribbonRotation}
+              modoMedicao={modoMedicao}
+              modoCalibrar={modoCalibrar}
+              mapaUrl={visita.mapa_url || null}
+              apiMedicaoUrl={apiMedicaoUrl}
+              escalaSlamMetros={visita.escala_slam_metros || null}
+              larguraCalibracaoM={parseFloat(larguraCalibracaoInput.replace(',', '.')) || null}
+              onResultadoMedicao={onResultadoMedicao}
+              onErroMedicao={onErroMedicao}
             />
           ) : (
             <Player360
@@ -727,7 +787,96 @@ export default function Visita() {
           >
             ⚙️
           </button>
+          {/* Medição (feature nova, 2026-07-16) - só faz sentido em vistorias com
+              fotos 360° (manifest_url) e mapa 3D já subido (mapa_url); vídeo puro
+              (Player360) não tem pose_raw por quadro pra medir. */}
+          {visita.manifest_url && (
+            <>
+              <div className="w-px h-5 bg-concreto-800" />
+              <button
+                onClick={() => {
+                  if (!visita.mapa_url) {
+                    mostrarToast('Esta vistoria não tem mapa 3D disponível (mapa_url) - reprocesse com o worker.py atualizado.', 'erro')
+                    return
+                  }
+                  setModoMedicao((m) => !m)
+                  setModoCalibrar(false)
+                  setResultadoMedicaoAtual(null)
+                }}
+                className={`w-8 h-8 rounded-lg flex items-center justify-center transition-all ${
+                  modoMedicao ? 'text-sinal-400 bg-concreto-800' : 'text-aco-400 hover:text-aco-200 hover:bg-concreto-800'
+                } ${!visita.mapa_url ? 'opacity-40' : ''}`}
+                title={visita.mapa_url ? 'Modo Medição (clique 2 pontos na foto)' : 'Sem mapa 3D disponível - reprocesse esta vistoria'}
+              >
+                📏
+              </button>
+            </>
+          )}
         </div>
+
+        {/* PAINEL DE MEDIÇÃO (Z-INDEX 30) - só aparece com modoMedicao ativo */}
+        {modoMedicao && (
+          <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-30 bg-concreto-900/95 backdrop-blur-md border border-concreto-700/80 rounded-xl p-4 w-[300px] shadow-2xl flex flex-col gap-3 text-xs font-sans">
+            <div className="flex items-center justify-between border-b border-concreto-800 pb-1.5 shrink-0">
+              <span className="font-mono text-[9px] text-aco-300 font-semibold uppercase tracking-wider">
+                Medição {modoCalibrar ? '(calibrando)' : ''}
+              </span>
+              <button
+                onClick={() => { setModoMedicao(false); setModoCalibrar(false) }}
+                className="text-aco-400 hover:text-alerta text-[10px] font-mono"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <p className="text-[10px] text-aco-400 leading-relaxed">
+              Clique em 2 pontos na foto 360° pra medir a distância entre eles.
+            </p>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setModoCalibrar((c) => !c)}
+                className={`flex-1 py-1.5 rounded border font-mono text-[10px] transition-all ${
+                  modoCalibrar
+                    ? 'bg-sinal-500 text-concreto-950 font-bold border-sinal-500'
+                    : 'bg-concreto-800 border-concreto-700 text-aco-400 hover:text-aco-200'
+                }`}
+                title="Ative pra calibrar a escala (metros) usando uma medida real conhecida (ex.: largura de uma porta)"
+              >
+                Calibrar
+              </button>
+              {visita.escala_slam_metros ? (
+                <span className="text-[9px] font-mono text-ok">
+                  {visita.escala_slam_metros.toFixed(4)} m/unid.
+                </span>
+              ) : (
+                <span className="text-[9px] font-mono text-aco-400">sem calibração</span>
+              )}
+            </div>
+
+            {modoCalibrar && (
+              <div className="space-y-1">
+                <span className="text-[10px] text-aco-300 font-mono block">Largura real (m) dos 2 pontos que serão clicados</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={larguraCalibracaoInput}
+                  onChange={(e) => setLarguraCalibracaoInput(e.target.value)}
+                  placeholder="ex.: 0.80"
+                  className="w-full bg-concreto-800 border border-concreto-700 rounded px-2 py-1 text-[11px] font-mono text-aco-200 focus:outline-none focus:border-sinal-500"
+                />
+              </div>
+            )}
+
+            {resultadoMedicaoAtual && !modoCalibrar && (
+              <div className="border-t border-concreto-800 pt-2 text-[10px] font-mono text-aco-300">
+                Última medição: {resultadoMedicaoAtual.distancia_m !== undefined
+                  ? `${resultadoMedicaoAtual.distancia_m.toFixed(2)} m`
+                  : `${resultadoMedicaoAtual.distancia_slam.toFixed(3)} unid. SLAM`}
+              </div>
+            )}
+          </div>
+        )}
 
         {/* POPUP FLUTUANTE DE CONFIGURAÇÕES (Z-INDEX 30) */}
         {mostrarConfigPopup && (

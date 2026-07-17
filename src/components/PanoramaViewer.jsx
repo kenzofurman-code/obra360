@@ -120,6 +120,15 @@ export default function PanoramaViewer({
   espelharCaminho = false,
   ribbonScale = 1.0, // multiplica o fator de escala base (22) da passarela 3D
   ribbonRotationOffset = 0, // graus - gira a passarela 3D em torno do ponto atual antes de desenhar
+  // --- Medição (feature nova, 2026-07-16 - ver api_medicao.py) ---
+  modoMedicao = false, // true = clique na foto marca pontos de medição em vez de nada
+  modoCalibrar = false, // true = os 2 próximos pontos calibram a escala (precisa larguraCalibracaoM), em vez de medir direto
+  mapaUrl = null, // visita.mapa_url (mapa.msg no R2) - sem isso, medição fica indisponível
+  apiMedicaoUrl = null, // base da API (ver api_medicao.py) - ex.: http://vps:8090
+  escalaSlamMetros = null, // visita.escala_slam_metros, se já calibrada (senão /medir devolve só unid. SLAM)
+  larguraCalibracaoM = null, // largura real (m) do vão usado pra calibrar, quando modoCalibrar=true
+  onResultadoMedicao, // (resultado, { calibrando }) => void - chamado com a resposta da API
+  onErroMedicao, // (mensagem) => void - erro local (sem pose_raw, sem mapaUrl, etc.) antes mesmo de chamar a API
 }) {
   const containerRef = useRef(null)
   const fakePlayerRef = useRef(null)
@@ -134,12 +143,38 @@ export default function PanoramaViewer({
   const espelharCaminhoRef = useRef(espelharCaminho)
   const ribbonScaleRef = useRef(ribbonScale)
   const ribbonRotationRef = useRef(ribbonRotationOffset)
+  const modoMedicaoRef = useRef(modoMedicao)
+  const modoCalibrarRef = useRef(modoCalibrar)
+  const mapaUrlRef = useRef(mapaUrl)
+  const apiMedicaoUrlRef = useRef(apiMedicaoUrl)
+  const escalaSlamMetrosRef = useRef(escalaSlamMetros)
+  const larguraCalibracaoMRef = useRef(larguraCalibracaoM)
+  const onResultadoMedicaoRef = useRef(onResultadoMedicao)
+  const onErroMedicaoRef = useRef(onErroMedicao)
+  // atribuída pelo effect de cena (abaixo) - permite limpar os marcadores/pontos
+  // de medição em andamento sempre que o modo muda, SEM precisar recriar a cena
+  // inteira (o effect de cena só depende de quadros/manifestUrl/autoplay).
+  const limparMedicaoRef = useRef(() => {})
   useEffect(() => { waypointsRef.current = waypoints }, [waypoints])
   useEffect(() => { lineOpacityRef.current = lineOpacity }, [lineOpacity])
   useEffect(() => { lineThicknessRef.current = lineThickness }, [lineThickness])
   useEffect(() => { espelharCaminhoRef.current = espelharCaminho }, [espelharCaminho])
   useEffect(() => { ribbonScaleRef.current = ribbonScale }, [ribbonScale])
   useEffect(() => { ribbonRotationRef.current = ribbonRotationOffset }, [ribbonRotationOffset])
+  useEffect(() => { mapaUrlRef.current = mapaUrl }, [mapaUrl])
+  useEffect(() => { apiMedicaoUrlRef.current = apiMedicaoUrl }, [apiMedicaoUrl])
+  useEffect(() => { escalaSlamMetrosRef.current = escalaSlamMetros }, [escalaSlamMetros])
+  useEffect(() => { larguraCalibracaoMRef.current = larguraCalibracaoM }, [larguraCalibracaoM])
+  useEffect(() => { onResultadoMedicaoRef.current = onResultadoMedicao }, [onResultadoMedicao])
+  useEffect(() => { onErroMedicaoRef.current = onErroMedicao }, [onErroMedicao])
+  useEffect(() => {
+    modoMedicaoRef.current = modoMedicao
+    limparMedicaoRef.current()
+  }, [modoMedicao])
+  useEffect(() => {
+    modoCalibrarRef.current = modoCalibrar
+    limparMedicaoRef.current()
+  }, [modoCalibrar])
   // headingOffset mantido na assinatura por paridade com Player360 (orienta a planta 2D,
   // não o vídeo/panorama - ver comentário equivalente em Player360.jsx)
   void headingOffset
@@ -350,6 +385,13 @@ export default function PanoramaViewer({
     }
     const onPointerUp = () => {
       isUserInteracting = false
+      // Modo medição (ver bloco "Medição" abaixo) tem prioridade e é mutuamente
+      // exclusivo com o pulo de frame por clique na fita - clicar medindo não
+      // deve também pular de foto.
+      if (modoMedicaoRef.current || modoCalibrarRef.current) {
+        if (totalDragDist < 6) tentarClicarMedicao(mouseClientX, mouseClientY)
+        return
+      }
       // Clique (nao arrasto) sobre a fita com uma foto em destaque (ver bolinha azul-
       // clara do hover) - pedido do Pedro em 2026-07-15: poder clicar na fita e pular
       // direto pra aquele frame, igual ja funciona na planta baixa.
@@ -382,6 +424,144 @@ export default function PanoramaViewer({
     let hoverFrameAtual = null // { t, x, y, ... } do quadro mais proximo do mouse, ou null
     const raycasterFita = new THREE.Raycaster()
     let mouseClientX = null, mouseClientY = null
+
+    // --- Medição (feature nova 2026-07-16 - ver api_medicao.py) ---
+    // Clique de 2 pontos sobre a ESFERA do panorama (não a fita) quando
+    // modoMedicao/modoCalibrar estiver ativo (ver onPointerUp acima, que chama
+    // tentarClicarMedicao). Cada ponto vira {u, v, pos_w, quat_wc} - a pose
+    // vem do proprio quadro em exibição no momento do clique (mesmo pose_raw
+    // que gerar_quadros.py anexa ao manifest.json quando --traj-completa foi
+    // passado - ver item 13 do CLAUDE.md). Os 2 pontos juntos disparam um
+    // POST pra api_medicao.py (/medir ou /calibrar).
+    const raycasterMedicao = new THREE.Raycaster()
+    let pontosMedicao = [] // até 2: { u, v, pos_w, quat_wc }
+    let marcadoresMedicao = [] // THREE.Mesh - um por ponto já clicado
+
+    const limparPontosMedicao = () => {
+      marcadoresMedicao.forEach((m) => {
+        scene.remove(m)
+        m.geometry.dispose()
+        m.material.dispose()
+      })
+      marcadoresMedicao = []
+      pontosMedicao = []
+    }
+    limparMedicaoRef.current = limparPontosMedicao
+
+    // Converte um clique de tela em (u,v) da textura equiretangular via
+    // raycast contra a esfera VISÍVEL no momento (frenteEhA decide qual das
+    // duas, igual ao resto do double-buffer). Usa hits[0].uv (calculado pelo
+    // próprio three.js) em vez de recalcular lon/lat manualmente - garante
+    // bater com o que está literalmente desenhado na tela.
+    const pegarUVDoClique = (clientX, clientY) => {
+      if (clientX === null || clientY === null) return null
+      const rect = renderer.domElement.getBoundingClientRect()
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1
+      const ndcY = -(((clientY - rect.top) / rect.height) * 2 - 1)
+      if (ndcX < -1 || ndcX > 1 || ndcY < -1 || ndcY > 1) return null
+      raycasterMedicao.setFromCamera({ x: ndcX, y: ndcY }, camera)
+      const meshVisivel = frenteEhA ? sphereA : sphereB
+      const hits = raycasterMedicao.intersectObject(meshVisivel)
+      if (hits.length === 0 || !hits[0].uv) return null
+      // ATENÇÃO - convenção do v do UV ainda NÃO confirmada visualmente contra
+      // o que medir_panorama.py/api_medicao.py esperam (u=0..1 esquerda->
+      // direita, v=0..1 topo->baixo, mesma convenção da imagem equiretangular
+      // original). O SphereGeometry padrão do three.js costuma sair nessa
+      // mesma convenção, mas se a medição sair sistematicamente errada
+      // (ex.: sempre no lado/altura oposto do que foi clicado), o mais
+      // provável é essa linha precisar de "1 - hits[0].uv.y" - confirmar
+      // clicando num ponto reconhecível (quina de porta) e comparando com
+      // o resultado antes de confiar cegamente nele.
+      return { u: hits[0].uv.x, v: hits[0].uv.y, point: hits[0].point.clone() }
+    }
+
+    const adicionarMarcadorMedicao = (point, cor) => {
+      const geo = new THREE.SphereGeometry(3, 16, 16)
+      const mat = new THREE.MeshBasicMaterial({
+        color: cor, transparent: true, opacity: 0.9, depthWrite: false,
+      })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.position.copy(point)
+      mesh.renderOrder = 3
+      mesh.frustumCulled = false
+      scene.add(mesh)
+      marcadoresMedicao.push(mesh)
+    }
+
+    // Chamado pelo onPointerUp quando modoMedicao/modoCalibrar está ativo e o
+    // gesto foi um clique (não arrasto). Acumula até 2 pontos; ao chegar no
+    // 2º, dispara a chamada pra api_medicao.py e limpa pra próxima medição.
+    const tentarClicarMedicao = (clientX, clientY) => {
+      const quadroAtual = quadrosRef.current[indiceAtualExibido]
+      if (!quadroAtual || !quadroAtual.pose_raw) {
+        if (onErroMedicaoRef.current) {
+          onErroMedicaoRef.current(
+            'Esta foto não tem pose 3D (vistoria processada sem SLAM, ou sem ' +
+            '--traj-completa) - medição indisponível para ela. Tente noutra foto ' +
+            'da mesma vistoria.'
+          )
+        }
+        return
+      }
+      const hit = pegarUVDoClique(clientX, clientY)
+      if (!hit) return
+      adicionarMarcadorMedicao(hit.point, pontosMedicao.length === 0 ? 0xfbbf24 : 0x22d3ee)
+      pontosMedicao.push({
+        u: hit.u,
+        v: hit.v,
+        pos_w: quadroAtual.pose_raw.pos_w,
+        quat_wc: quadroAtual.pose_raw.quat_wc,
+      })
+
+      if (pontosMedicao.length < 2) return
+
+      const pontosParaEnviar = pontosMedicao
+      const calibrando = modoCalibrarRef.current
+      limparPontosMedicao() // já reseta pro próximo par, mesmo antes da resposta da API chegar
+
+      const apiUrl = apiMedicaoUrlRef.current
+      const mapaUrlAtual = mapaUrlRef.current
+      if (!apiUrl || !mapaUrlAtual) {
+        if (onErroMedicaoRef.current) {
+          onErroMedicaoRef.current(
+            !mapaUrlAtual
+              ? 'Esta vistoria não tem mapa 3D disponível (mapa_url) - processada ' +
+                'antes dessa feature existir, ou o SLAM não rodou/não subiu o mapa ' +
+                'pro R2.'
+              : 'API de medição não configurada (apiMedicaoUrl).'
+          )
+        }
+        return
+      }
+      if (calibrando && !larguraCalibracaoMRef.current) {
+        if (onErroMedicaoRef.current) {
+          onErroMedicaoRef.current('Informe a largura real (m) antes de calibrar.')
+        }
+        return
+      }
+
+      const corpo = { mapa_url: mapaUrlAtual, pontos: pontosParaEnviar }
+      if (calibrando) {
+        corpo.largura_real_m = larguraCalibracaoMRef.current
+      } else if (escalaSlamMetrosRef.current) {
+        corpo.escala_slam_metros = escalaSlamMetrosRef.current
+      }
+
+      fetch(`${apiUrl}/${calibrando ? 'calibrar' : 'medir'}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(corpo),
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (onResultadoMedicaoRef.current) onResultadoMedicaoRef.current(json, { calibrando })
+        })
+        .catch((e) => {
+          if (onErroMedicaoRef.current) {
+            onErroMedicaoRef.current(`Falha ao chamar a API de medição: ${e.message || e}`)
+          }
+        })
+    }
 
     const atualizarPassarela = () => {
       const t_now = fp.currentTime()
@@ -627,6 +807,10 @@ export default function PanoramaViewer({
       if (hoverMesh) {
         hoverMesh.geometry.dispose()
         hoverMesh.material.dispose()
+      }
+      limparPontosMedicao()
+      if (limparMedicaoRef.current === limparPontosMedicao) {
+        limparMedicaoRef.current = () => {}
       }
       renderer.dispose()
       if (container.contains(renderer.domElement)) container.removeChild(renderer.domElement)

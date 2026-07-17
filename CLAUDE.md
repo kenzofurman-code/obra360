@@ -385,6 +385,85 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       isolada contra 1 foto real (`quadro_0080.jpg`) nesta sessão. Primeira
       coisa a confirmar no próximo run real do Pedro.
 
+18. **Ferramenta de medição no site (2 cliques na foto → distância) —
+    2026-07-16, pedido do Pedro após perguntar "você colocou alguma
+    ferramenta pra medição nos panoramas?"**. Reusa `medir_ponto_robusto()`
+    (item 16) sem duplicar nenhuma lógica de RANSAC/landmarks. Arquitetura
+    escolhida pelo Pedro entre as opções apresentadas: **API Python numa VPS**
+    (a mesma que vai rodar `worker.py --poll`), em vez de WASM/reimplementação
+    em JS — os landmarks (`mapa.msg`, 100MB+) e o RANSAC sobre dezenas de
+    milhares de pontos 3D só fazem sentido processar no servidor.
+    - **Gap descoberto e corrigido nesta sessão**: `mapa.msg` (o mapa 3D do
+      stella_vslam) NUNCA tinha sido persistido em lugar nenhum — só existia
+      na pasta temp durante o `worker.py`, perdido depois do processamento.
+      Sem isso, a API de medição não teria o que baixar. Fix: `worker.py`
+      ganhou `subir_arquivo_r2()` (upload genérico de arquivo binário, mesmo
+      padrão de `subir_json_r2`) — chamado logo após o SLAM rodar com
+      sucesso, gravando `mapa_url` no Firestore (mesmo padrão de
+      `waypoints_url`/`manifest_url`). Falha de upload não trava o pipeline
+      (`mapa_r2_key = None`, log de aviso) — a vistoria só fica sem medição
+      disponível, não quebra o resto.
+    - **Novo arquivo `api_medicao.py`** (Flask, roda na VPS junto do
+      `worker.py --poll`): `POST /medir` (2 pontos `{u, v, pos_w, quat_wc}` —
+      a pose vem do próprio `pose_raw` do quadro clicado no navegador, igual
+      `super_resolucao.py` — mais `mapa_url` e `escala_slam_metros` opcional)
+      → baixa/cacheia o `mapa.msg` (disco + memória, por hash da URL), roda
+      `medir_ponto_robusto()` nos 2 pontos, devolve `distancia_slam` (sempre)
+      e `distancia_m` (se calibrado) ou motivo de falha por ponto. `POST
+      /calibrar` (mesma coisa + `largura_real_m` de uma medida conhecida, ex.
+      largura de porta) → devolve `escala_slam_metros` via `calibrar_escala()`
+      (já existia em `medir_panorama.py`, sem uso até agora). Cache de
+      landmarks em disco (`cache_mapas/`, por SHA1 da URL) evita rebaixar
+      100MB+ a cada clique. `MEDICAO_API_KEY` opcional (env var) — proteção
+      mínima via header, sem autenticação de usuário de verdade ainda.
+    - **Validado com HTTP real nesta sessão** (não só review de código):
+      serviu o `mapa.msg` real de 112MB via `http.server`, subiu a API numa
+      porta local, e testou os 3 endpoints com curl: `/saude` ok; `/medir`
+      com 1 ponto bom (u=0.30/v=0.35, quadro 559 — ver item 16) + 1 ponto
+      ruim inventado → devolveu diagnóstico por ponto corretamente
+      (dispersao=0.853 no ruim, sucesso=false, sem travar o ponto bom);
+      `/medir` com 2 pontos bons sem escala → `distancia_slam=2.1604`;
+      mesma chamada com `escala_slam_metros=0.30` → `distancia_m=0.6481`
+      (2.1604×0.30, conferido); `/calibrar` com `largura_real_m=0.80` nos
+      mesmos 2 pontos → `escala_slam_metros=0.3703` (0.80/2.1604, conferido).
+    - **Frontend (`PanoramaViewer.jsx`)**: novas props `modoMedicao`,
+      `modoCalibrar`, `mapaUrl`, `apiMedicaoUrl`, `escalaSlamMetros`,
+      `larguraCalibracaoM`, `onResultadoMedicao`, `onErroMedicao` — mesmo
+      padrão de refs-espelhando-props já usado no resto do componente (não
+      recria a cena 3D quando o modo muda). Clique (não arrasto, mesmo
+      limiar de 6px do resto do viewer) na ESFERA do panorama, quando
+      `modoMedicao`/`modoCalibrar` ativo, tem PRIORIDADE sobre o pulo de
+      frame por clique na fita (mutuamente exclusivos). Usa
+      `raycaster.intersectObject(esferaVisível).uv` pra achar (u,v) —
+      **ATENÇÃO: convenção do eixo v do UV ainda NÃO confirmada
+      visualmente** (comentário no código apontando que pode precisar de
+      `1 - v` se a medição sair sistematicamente no lado/altura errado).
+      Acumula 2 pontos (marcador esfera colorida como feedback visual),
+      dispara `fetch()` pro endpoint certo, chama o callback com o
+      resultado, limpa pro próximo par. `limparMedicaoRef` permite que o
+      componente pai reseté pontos em andamento ao trocar de modo sem
+      recriar a cena inteira.
+    - **`Visita.jsx`**: botão 📏 na barra de controle (só aparece com
+      `manifest_url`, desabilitado com aviso se faltar `mapa_url`) + painel
+      flutuante com toggle "Calibrar", input de largura real (m), e exibição
+      do último resultado. `escala_slam_metros` persiste no Firestore via
+      `atualizarVisita()` assim que uma calibração tem sucesso. Precisa de
+      `VITE_API_MEDICAO_URL` (env var, Vercel) apontando pra API na VPS —
+      sem isso o botão aparece mas retorna erro claro ao tentar medir.
+    - **Ainda NÃO testado**: nenhum teste no navegador de verdade (só
+      esbuild/leitura de código) — a convenção do UV, o clique na esfera
+      certa durante o crossfade, e a API rodando de fato na VPS (hoje só
+      validada localmente neste sandbox) são os 3 pontos a confirmar no
+      próximo uso real do Pedro. `api_medicao.py` ainda não foi deployado na
+      VPS (ver `obra360_hosting_decision`).
+    - **Deliberadamente adiado** (escolha do Pedro, opção "a" quando
+      perguntado se preferia terminar o fluxo de 2 cliques primeiro ou
+      construir os dois modos juntos): o modo alternativo de medição por
+      altura de câmera (`medir_piso_por_altura_bastao()`, já existe em
+      `medir_panorama.py` mas sem uso, técnica clássica de apps de AR —
+      `distância = altura_câmera / tan(ângulo_elevação)`) fica pra depois
+      deste fluxo estar validado ponta a ponta.
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
@@ -455,6 +534,18 @@ real (não só lidos/revisados) — resultado numérico ao lado.
   interface, não via script) qual ponto da foto corresponde a u=0.30/v=0.35
   antes de usar esse caso como referência de "bom clique" pra ensinar o uso
   da ferramenta.
+- **Item 18 (ferramenta de medição) — nada testado no navegador ainda.**
+  Backend (`api_medicao.py`) validado com HTTP real neste sandbox, mas não
+  deployado na VPS. Frontend (`PanoramaViewer.jsx`/`Visita.jsx`) só validado
+  por leitura de código, sem browser real disponível nesta sessão. Ordem
+  sugerida pro Pedro testar: (1) subir `api_medicao.py` na VPS e configurar
+  `VITE_API_MEDICAO_URL` no Vercel; (2) rodar `worker.py` numa vistoria nova
+  pra confirmar que `mapa_url` é gravado no Firestore; (3) abrir essa
+  vistoria no site, clicar 📏, clicar "Calibrar" numa porta de largura
+  conhecida, depois medir outro trecho e comparar com a régua real; (4) se o
+  ponto clicado aparecer sistematicamente no lado/altura errado da foto,
+  provavelmente é a convenção do eixo v do UV (ver comentário em
+  `pegarUVDoClique` no `PanoramaViewer.jsx`).
 
 ## Notas operacionais (não esquecer)
 
