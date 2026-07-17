@@ -13,6 +13,13 @@ except ImportError:
     print("Por favor, instale executando: pip install opencv-python numpy")
     sys.exit(1)
 
+# Leitura do video via ffmpeg (video_io.py) em vez de cv2.VideoCapture direto -
+# o ffmpeg embutido no build do opencv-python pra Windows falha em abrir
+# alguns codecs (confirmado com ProRes); ffmpeg do sistema decodifica qualquer
+# codec que ele souber ler, sem tratamento especial por formato (ver
+# video_io.py pro motivo completo).
+from video_io import FFmpegVideoReader
+
 class ExtendedKalmanFilter:
     def __init__(self):
         # Estado inicial: [px, py, v, theta]
@@ -84,7 +91,7 @@ def extract_trajectory(video_path, sample_rate=0.5):
     Processa o video e extrai a trajetoria 2D usando um algoritmo robusto de
     Odometria Cinemática Equiretangular combinada com Filtro de Kalman Estendido (EKF-VO).
     """
-    cap = cv2.VideoCapture(video_path)
+    cap = FFmpegVideoReader(video_path)
     if not cap.isOpened():
         print(f"Erro ao abrir o video: {video_path}")
         return None

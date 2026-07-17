@@ -7,7 +7,7 @@ color 0A
 :: pasta de "VID_20260703_110303_00_021.mp4"). O projeto Obra360 (worker.py,
 :: .env, serviceAccountKey.json) fica em outro lugar - o caminho abaixo aponta
 :: pra la, nao precisa mexer.
-:: ATENCAO: assume 1 video por pasta = 1 vistoria. Se tiver mais de um .mp4
+:: ATENCAO: assume 1 video por pasta = 1 vistoria. Se tiver mais de um .mp4/.mov
 :: aqui, separe cada video numa pasta diferente e rode o .bat em cada uma.
 :: ===========================================================================
 
@@ -55,10 +55,14 @@ if "%VISITA_ID%"=="" (
     exit /b
 )
 
-:: 5. Roda o worker para o(s) .mp4 encontrado(s) nesta pasta, salvando um log
-::    em arquivo (mais facil de me mandar do que copiar do terminal).
+:: 5. Roda o worker para o(s) .mp4/.mov encontrado(s) nesta pasta, salvando um
+::    log em arquivo (mais facil de me mandar do que copiar do terminal).
+::    .mov entrou aqui pra cobrir exports em ProRes (que saem em container
+::    MOV, nao MP4, do Insta360 Studio/DJI Studio) - o video_io.py do projeto
+::    ja decodifica qualquer codec via ffmpeg, entao a extensao do arquivo em
+::    si nao importa pro processamento, so' pro .bat conseguir ACHAR o arquivo.
 set found=0
-for %%f in ("%~dp0*.mp4") do (
+for %%f in ("%~dp0*.mp4" "%~dp0*.mov") do (
     set found=1
     echo.
     echo [PROCESSANDO] Video: "%%~nxf"
@@ -69,7 +73,7 @@ for %%f in ("%~dp0*.mp4") do (
 )
 
 if %found% equ 0 (
-    echo [AVISO] Nenhum arquivo .mp4 encontrado nesta pasta.
+    echo [AVISO] Nenhum arquivo .mp4 ou .mov encontrado nesta pasta.
     echo Coloque este .bat na mesma pasta do video 360 e rode de novo.
 )
 
