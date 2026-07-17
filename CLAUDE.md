@@ -39,6 +39,16 @@
   mensagem de commit num arquivo `.txt` separado (sem passar pelo parser
   do shell). Pedro precisa salvar os DOIS arquivos (`commitN.txt` e
   `commitN_msg.txt`) na raiz do repo antes de rodar.
+- **PowerShell corrompe caminhos com acento passados como argumento pro
+  Python** (confirmado 2026-07-16, testando `testar_depth_anything.py`):
+  `cv2.imread` recebeu `teste medi├º├úo e resolucao/...` em vez de `teste
+  medição e resolucao/...` e falhou com "can't open/read file". Fix
+  aplicado: pasta renomeada pra `teste_medicao_e_resolucao` (sem espaço,
+  sem acento — mesmo padrão de `modelos_sr`/`cache_mapas`). Regra geral
+  daqui pra frente: evitar acento/espaço em nomes de pasta/arquivo que vão
+  ser passados como argumento de linha de comando pro Python no Windows;
+  se precisar usar um caminho acentuado mesmo assim, `chcp 65001` antes do
+  `python` no PowerShell costuma resolver.
 
 ## O que foi corrigido e validado nesta sessão
 
@@ -458,178 +468,4 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       VPS (ver `obra360_hosting_decision`).
     - **Deliberadamente adiado** (escolha do Pedro, opção "a" quando
       perguntado se preferia terminar o fluxo de 2 cliques primeiro ou
-      construir os dois modos juntos): o modo alternativo de medição por
-      altura de câmera (`medir_piso_por_altura_bastao()`, já existe em
-      `medir_panorama.py` mas sem uso, técnica clássica de apps de AR —
-      `distância = altura_câmera / tan(ângulo_elevação)`) fica pra depois
-      deste fluxo estar validado ponta a ponta.
-
-19. **Teste de Depth-Anything V2 Small como alternativa/fallback ao RANSAC
-    de landmarks — 2026-07-16, Pedro pediu pra testar depois de eu sugerir
-    como possível solução pro maior gap conhecido do item 16
-    (`medir_por_epipolar_fallback()` não implementado, cliques em regiões de
-    mapa esparso simplesmente falham).**
-    - Ideia: Depth-Anything estima profundidade densa por pixel a partir de
-      UMA FOTO SÓ (sem precisar de landmarks/matching entre keyframes). Como
-      cada quadro já tem `pose_raw`, dava pra usar profundidade + pose pra
-      obter o ponto 3D de qualquer clique direto — mas na prática, pra 2
-      pontos de uma MEDIÇÃO típica (largura de porta/janela/rachadura) que
-      normalmente aparecem na MESMA foto, nem precisa de pose_raw/mundo: os
-      2 pontos retroprojetados no espaço da própria câmera já dão a
-      distância entre eles. Isso é mais simples que todo o pipeline SLAM
-      atual — não usa `mapa.msg`, não usa RANSAC, não depende de quantos
-      keyframes existem perto do clique.
-    - **Problema identificado antes de testar**: as fotos do worker.py são
-      EQUIRETANGULARES (360°), mas Depth-Anything foi treinado em fotos de
-      câmera normal (pinhole) — rodar direto na equiretangular daria
-      profundidade geometricamente errada (distorção forte, principalmente
-      longe do "equador" da imagem). Fix: novo arquivo
-      `equirect_perspectiva.py` — `recortar_perspectiva(img, u_centro,
-      v_centro, fov_h_graus, tamanho_saida)` gera um recorte PINHOLE
-      retilíneo centrado em qualquer direção, usando a MESMA convenção
-      (u,v)→(longitude,latitude) de `raio_do_clique()` em
-      `medir_panorama.py` (não inventa mais uma convenção divergente em
-      cima das que já existem). Devolve também a matriz intrínseca `K` do
-      recorte, necessária pra depois retroprojetar (pixel, profundidade) em
-      ponto 3D.
-    - **Validado com dados reais nesta sessão** (não só revisão de código):
-      rodei `recortar_perspectiva()` contra o `quadro_0080.jpg` real (o
-      mesmo já usado nos testes do item 16) — o recorte resultante tem
-      linhas retas (junta do teto, quinas de parede) saindo RETAS, sem a
-      curvatura característica da distorção equiretangular, confirmando que
-      a reprojeção geométrica está correta. Também validei
-      `retroprojetar()`/`amostrar_profundidade()` com um teste sintético:
-      2 pontos 3D conhecidos, projetados pela mesma fórmula pinhole,
-      retroprojetados de volta — bateram exatos (erro < 1e-6), confirmando
-      que a matemática de volta a 3D está correta.
-    - **NÃO validado ainda: a parte que realmente importa (o modelo em
-      si)**. Este sandbox de desenvolvimento bloqueia `huggingface.co` (e
-      todos os mirrors alternativos testados: `cdn-lfs.huggingface.co`,
-      `modelscope.cn`, `gitee.com`, `sourceforge.net`) — só `pypi.org` e
-      `github.com` (páginas HTML, não os assets de release) estão
-      liberados. Não consegui baixar nenhum checkpoint do Depth-Anything V2
-      pra rodar de verdade. Novo arquivo `testar_depth_anything.py` está
-      pronto (recorta a foto, roda o modelo via `transformers`, retroprojeta
-      2 pontos clicados, compara com uma distância real opcional) mas
-      **precisa ser rodado na máquina do Pedro** (`pip install torch
-      transformers pillow`), não neste sandbox.
-    - **Pendências reais antes de confiar nisso pra produção**: (1) rodar o
-      script de verdade contra fotos reais e comparar com trena, do mesmo
-      jeito que fizemos com PSNR/SSIM pro ESPCN — não aceitar "parece certo"
-      como validação; (2) confirmar se o checkpoint métrico
-      (`Metric-Hypersim-Small`, treinado em cenas de interior) generaliza
-      pra concreto bruto/pouca luz de obra em construção, ou se sofre do
-      mesmo problema de domínio que o upscale (item 17); (3) o exact model
-      id no Hugging Face não foi confirmado por mim (sem acesso pra
-      conferir) — só um palpite educado no código, sinalizado com comentário
-      pra ajustar se o `transformers` reclamar; (4) mesmo que funcione bem,
-      só serve pra pares de pontos visíveis na MESMA foto — não substitui
-      o SLAM pra medições entre pontos distantes/vistos de ângulos muito
-      diferentes.
-
-## Pendências conhecidas (não resolvidas)
-
-- Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
-  3D) — só validado por esbuild até agora, não visualmente.
-- Confirmar com o Pedro se o `commit8` (max-h-[48vh]) resolveu de vez o
-  drawer — se não, o problema pode estar em outro ancestral flex, vale
-  inspecionar a árvore inteira de `Visita.jsx` em vez de só o wrapper local.
-- Resolver o backlog de git não commitado (ver seção acima).
-- PJ14 (porta de correr) não gera vão sintético — célula de TIPO vem colada
-  sem espaço (`CORRER(2FLS)/FIXO(2FLS)`), não bate com
-  `TIPOS_ESQUADRIA_VALIDOS`. Baixa prioridade.
-- 1 dos 54 ambientes extraídos saiu com nome errado (encoding/fonte
-  corrompida no PDF em si, não no parser). Baixa prioridade.
-- Item 4.5 do roadmap: botão "🕐 Histórico" (abaixo do Painel de Controle,
-  `commit11`) foi construído em 2026-07-15 — abre dropdown com as vistorias
-  do mesmo `local_id` por data, navega entre elas. **Ainda falta a outra
-  metade do item**: o viewer comparativo lado-a-lado de panoramas
-  sincronizados (por enquanto só troca de página, não compara). Vistorias
-  antigas sem `local_id` (anteriores a 2026-07-14) mostram o botão desabilitado.
-  **Não confirmado pelo Pedro rodando no navegador ainda.**
-- Candidatura ao SDK da Insta360 (https://www.insta360.com/sdk/apply):
-  rascunho de texto em inglês pro campo "Reasons for SDK application" foi
-  oferecido ao Pedro, sem confirmação se ele quer ajustar tom/tamanho ou
-  incluir um número concreto de vistorias/mês.
-- **CONFIRMADO 2026-07-16** (1º run real de ponta a ponta, vistoria
-  `Nf1KoXXPByR9G01WvnjO`, vídeo `VID_20260710_163541_00_022.mp4`, total
-  4586.9s): a suspeita do item 9 se confirma — o decode full-res do
-  `gerar_quadros.py` (2390.6s, 52.1% do tempo total) pesa mais que o
-  próprio `stella_vslam` (352.9s, 7.7%). Somando a redução de vídeo pro
-  SLAM (494.6s) com esse decode full-res, são 2885.2s (62.9% do total)
-  gastos decodificando o MESMO vídeo duas vezes. Upload pro R2 é o 2º maior
-  custo isolado (1333.7s, 29.1%). Ainda não otimizado — só medido/confirmado.
-- Falta ainda confirmar rodando de verdade: a mudança em `calibrar_por_portas`
-  (heading/espelhar fixos, só escala calibrada) — validado só
-  matematicamente/mock nesta sessão, não com Docker+SLAM real ainda (o run
-  de 2026-07-16 usou calibração automática por portas com sucesso -
-  residual 0.0057 - mas não isola especificamente essa mudança).
-- `super_resolucao.py` (item 13) — validado só com dados sintéticos. 1º run
-  real (2026-07-16, vistoria `Nf1KoXXPByR9G01WvnjO`) rodou com sucesso mas
-  **sem scipy instalado no Python local do Pedro** (o que roda
-  `gerar_quadros.py`, fora do Docker) - o guard funcionou como esperado (não
-  travou o pipeline), mas nenhum quadro dessa vistoria ganhou `pose_raw`.
-  Criado `retrofit_pose_raw.py` (novo script, não reprocessa a vistoria -
-  anexa `pose_raw` num manifest.json já gerado usando o `frame_trajectory.txt`
-  ainda salvo na pasta temp, casando pelo campo "t" - menos preciso que o
-  fluxo normal via fidx exato, ±0.5s típico) pra Pedro testar sem esperar
-  os ~76min de novo. 2º run (mesma vistoria, scipy já instalado) confirmou
-  `pose_raw` populado nos 1077/1077 quadros. **Ainda falta**: ganho visual
-  de fato em pontos vistos por 2+ quadros (nenhum teste real de fusão
-  multi-frame com pontos reais ainda — só o passo 1, achar o ponto 3D do
-  clique, foi testado com dados reais até agora, ver item 16) antes de
-  ligar isso na UI.
-- `medir_por_epipolar_fallback()` (usado quando `medir_ponto_robusto`/RANSAC
-  não acha plano confiável — ver item 16) continua **não implementado**.
-  Sem ele, cliques em regiões de mapa esparso ou pouco texturizadas
-  simplesmente falham (com motivo claro, não silenciosamente) em vez de
-  serem medidos por um método alternativo. Maior lacuna de cobertura atual
-  do `medir_panorama.py`/`super_resolucao.py`.
-- Item 16 (`medir_ponto_robusto`) validado com dados reais nos DOIS
-  sentidos: além dos cliques problemáticos já conhecidos (janelas de
-  `quadro_0080.jpg`, portas de `quadro_0559.jpg` — todos corretamente
-  `sucesso=False`), uma varredura de grade em `quadro_0559.jpg` achou casos
-  reais de `sucesso=True` (ex.: u=0.30/v=0.35 — as 6 combinações de busca
-  convergem com dispersão de só 0.018 unid. SLAM, `confianca='alta'`),
-  confirmando que a função não é excessivamente conservadora — ela aceita
-  cliques bem suportados por landmarks e só rejeita os genuinamente
-  inconsistentes. Ainda falta o Pedro confirmar visualmente (clicando na
-  interface, não via script) qual ponto da foto corresponde a u=0.30/v=0.35
-  antes de usar esse caso como referência de "bom clique" pra ensinar o uso
-  da ferramenta.
-- **Item 18 (ferramenta de medição) — nada testado no navegador ainda.**
-  Backend (`api_medicao.py`) validado com HTTP real neste sandbox, mas não
-  deployado na VPS. Frontend (`PanoramaViewer.jsx`/`Visita.jsx`) só validado
-  por leitura de código, sem browser real disponível nesta sessão. Ordem
-  sugerida pro Pedro testar: (1) subir `api_medicao.py` na VPS e configurar
-  `VITE_API_MEDICAO_URL` no Vercel; (2) rodar `worker.py` numa vistoria nova
-  pra confirmar que `mapa_url` é gravado no Firestore; (3) abrir essa
-  vistoria no site, clicar 📏, clicar "Calibrar" numa porta de largura
-  conhecida, depois medir outro trecho e comparar com a régua real; (4) se o
-  ponto clicado aparecer sistematicamente no lado/altura errado da foto,
-  provavelmente é a convenção do eixo v do UV (ver comentário em
-  `pegarUVDoClique` no `PanoramaViewer.jsx`).
-
-## Notas operacionais (não esquecer)
-
-- **Docker Desktop precisa estar rodando** antes de `worker.py` — sem ele,
-  `rodar_slam.py` falha e o worker cai (por design) no fallback de odometria
-  leve (`process_trajectory.py`), que é bem menos preciso. Não é bug; é
-  esperado no ambiente local do Pedro. Na VPS (Contabo Cloud VPS 20, KVM —
-  ver `obra360_hosting_decision`) isso não deve acontecer se o Docker estiver
-  provisionado corretamente no servidor.
-- Vercel exige rebuild manual/automático após `git push` pro frontend
-  refletir mudanças — scripts Python (`worker.py` e afins) rodam direto do
-  disco, sem build step.
-- Deploy do `worker.py --poll` na VPS ainda é o próximo passo pendente (ver
-  `obra360_hosting_decision`) — nesta sessão o worker ainda rodou na máquina
-  local do Pedro.
-
-## Onde encontrar o quê
-
-- `OBRA360_ROADMAP.md` — arquitetura, decisões de backend (R2 vs Firebase),
-  fases comerciais priorizadas, critério de "pronto pra vender".
-- `OBRA360_SLAM_HANDOFF.md` — pipeline SLAM em si (stella_vslam, scripts,
-  lições técnicas de coordenadas/aspecto, backlog de features).
-- Este arquivo — o que mudou na sessão de 2026-07-15 (pipeline P070) e notas
-  operacionais do dia a dia.
+      construir os dois modos junt
