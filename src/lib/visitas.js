@@ -124,3 +124,33 @@ export async function atualizarStatus(visitaId, status) {
 export async function deletarVisita(visitaId) {
   await deleteDoc(doc(db, COL, visitaId))
 }
+
+// Exclusao COMPLETA (2026-07-17): alem do doc do Firestore, limpa o storage
+// R2 da vistoria (panoramas/manifest/waypoints/mapa.msg sob o prefixo
+// {visita_id}/ + o video bruto em video_r2_key) via api_medicao.py na VPS -
+// as credenciais do R2 nunca chegam ao navegador. Sem essa limpeza, cada
+// exclusao deixava ate ~50GB orfaos no bucket.
+// Se apiUrl nao estiver configurada, lanca erro claro em vez de excluir pela
+// metade em silencio - o chamador (Home.jsx) oferece o fallback explicito de
+// excluir so o registro.
+export async function excluirVisitaCompleta(visita, { apiUrl, apiKey } = {}) {
+  if (!apiUrl) {
+    throw new Error('API de storage não configurada (VITE_API_MEDICAO_URL) - ' +
+      'não dá pra limpar os arquivos da vistoria no armazenamento.')
+  }
+  const headers = { 'Content-Type': 'application/json' }
+  if (apiKey) headers['X-Api-Key'] = apiKey
+  const r = await fetch(`${apiUrl}/vistoria/excluir-storage`, {
+    method: 'POST', headers,
+    body: JSON.stringify({
+      visita_id: visita.id,
+      video_r2_key: visita.video_r2_key || null,
+    }),
+  })
+  const json = await r.json().catch(() => ({}))
+  if (!r.ok || json.erro) {
+    throw new Error(json.erro || `Falha na limpeza do storage (HTTP ${r.status})`)
+  }
+  await deleteDoc(doc(db, COL, visita.id))
+  return json // { objetos_removidos, video_removido }
+}

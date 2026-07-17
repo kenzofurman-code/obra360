@@ -337,6 +337,55 @@ def upload_abortar():
     return jsonify(sucesso=True)
 
 
+@app.route('/vistoria/excluir-storage', methods=['POST'])
+def vistoria_excluir_storage():
+    """Apaga do R2 TUDO que pertence a uma vistoria: o prefixo {visita_id}/
+    (panoramas + mini/ + manifest.json + waypoints_corrigidos.json + mapa.msg)
+    e o video bruto (video_r2_key, quando a vistoria veio do upload direto).
+    Chamado pelo site ANTES de deletar o doc do Firestore (excluirVisitaCompleta
+    em visitas.js) - sem isso, cada vistoria excluida deixava ate ~50GB
+    orfaos pagando storage pra sempre.
+
+    Protecao importante: visita_id precisa parecer um id de doc do Firestore
+    (alfanumerico, >=8 chars). Sem essa checagem, um visita_id vazio/'../'
+    viraria um prefixo que varre o bucket inteiro."""
+    erro_auth = _checar_api_key()
+    if erro_auth:
+        return erro_auth
+    body = request.get_json(force=True) or {}
+    visita_id = str(body.get('visita_id') or '')
+    video_r2_key = body.get('video_r2_key')
+    if not re.fullmatch(r'[A-Za-z0-9_-]{8,}', visita_id):
+        return jsonify(erro="visita_id invalido (esperado id alfanumerico do Firestore)."), 400
+    try:
+        s3, bucket = _r2_client()
+        removidos = 0
+        token = None
+        while True:
+            kw = dict(Bucket=bucket, Prefix=f'{visita_id}/', MaxKeys=1000)
+            if token:
+                kw['ContinuationToken'] = token
+            page = s3.list_objects_v2(**kw)
+            chaves = [dict(Key=o['Key']) for o in page.get('Contents', [])]
+            if chaves:
+                s3.delete_objects(Bucket=bucket,
+                                   Delete=dict(Objects=chaves, Quiet=True))
+                removidos += len(chaves)
+            if not page.get('IsTruncated'):
+                break
+            token = page.get('NextContinuationToken')
+        video_removido = False
+        if video_r2_key and str(video_r2_key).startswith('videos/'):
+            s3.delete_object(Bucket=bucket, Key=str(video_r2_key))
+            video_removido = True
+    except Exception as e:
+        return jsonify(erro=f"Falha ao limpar storage: {e}"), 500
+    print(f"[excluir] vistoria {visita_id}: {removidos} objetos + "
+          f"video={'sim' if video_removido else 'nao'}")
+    return jsonify(sucesso=True, objetos_removidos=removidos,
+                    video_removido=video_removido)
+
+
 @app.route('/saude', methods=['GET'])
 def saude():
     return jsonify(status='ok', mapas_em_cache=len(_cache_landmarks))

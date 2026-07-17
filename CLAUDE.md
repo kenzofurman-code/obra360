@@ -742,6 +742,16 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       (primeiro com um vídeo PEQUENO): upload → na_fila → worker da VPS pega
       → processado. Se a parte falhar com erro de ETag/CORS, é o item (b)
       acima. esbuild ok em Upload/Visita/visitas.
+    - **Exclusão completa de vistoria (mesma noite, pedido do Pedro)**:
+      `/vistoria/excluir-storage` na api_medicao.py apaga o prefixo
+      `{visita_id}/` inteiro (paginado, >1000 objetos) + o vídeo bruto
+      (`video_r2_key`), com guarda de id (regex alfanumérico ≥8 — id
+      vazio/malicioso varreria o bucket). `visitas.js::excluirVisitaCompleta`
+      chama a API e só então deleta o doc; `Home.jsx` trocou o `confirm()`
+      por modal que lista o que será apagado e, se a limpeza do storage
+      falhar, oferece explicitamente "excluir só o registro". Validado
+      contra moto: 1204 objetos paginados + vídeo removidos, vistoria
+      vizinha intacta, ids inválidos rejeitados (400).
 
 ## Pendências conhecidas (não resolvidas)
 

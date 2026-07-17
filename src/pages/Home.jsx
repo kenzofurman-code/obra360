@@ -1,7 +1,7 @@
 // src/pages/Home.jsx
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { listarVisitas, deletarVisita } from '../lib/visitas'
+import { listarVisitas, deletarVisita, excluirVisitaCompleta } from '../lib/visitas'
 
 function formatData(ts) {
   if (!ts) return '—'
@@ -13,6 +13,17 @@ export default function Home() {
   const navigate = useNavigate()
   const [visitas, setVisitas] = useState([])
   const [loading, setLoading] = useState(true)
+  // Modal de exclusao (2026-07-17): substitui o confirm() nativo. Fluxo:
+  // escolhe a vistoria -> modal explica O QUE sera apagado (registro +
+  // panoramas/mapa/video no storage) -> excluirVisitaCompleta() limpa o R2
+  // via API da VPS e depois o doc do Firestore. Se a limpeza do storage
+  // falhar (API fora do ar etc.), o modal mostra o erro e oferece excluir
+  // SO o registro - escolha explicita, nunca silenciosa.
+  const [excluindo, setExcluindo] = useState(null)      // vistoria alvo do modal
+  const [excluindoBusy, setExcluindoBusy] = useState(false)
+  const [excluirErro, setExcluirErro] = useState('')
+  const apiMedicaoUrl = import.meta.env.VITE_API_MEDICAO_URL || null
+  const apiMedicaoKey = import.meta.env.VITE_MEDICAO_API_KEY || null
 
   useEffect(() => {
     listarVisitas().then(v => {
@@ -21,14 +32,30 @@ export default function Home() {
     })
   }, [])
 
-  async function remover(e, id) {
+  function abrirExclusao(e, v) {
     e.stopPropagation()
-    if (!confirm('Tem certeza que deseja remover esta vistoria?')) return
+    setExcluirErro('')
+    setExcluindo(v)
+  }
+
+  async function confirmarExclusao(soRegistro = false) {
+    if (!excluindo) return
+    setExcluindoBusy(true)
+    setExcluirErro('')
     try {
-      await deletarVisita(id)
-      setVisitas(prev => prev.filter(v => v.id !== id))
+      if (soRegistro) {
+        await deletarVisita(excluindo.id)
+      } else {
+        await excluirVisitaCompleta(excluindo, {
+          apiUrl: apiMedicaoUrl, apiKey: apiMedicaoKey,
+        })
+      }
+      setVisitas(prev => prev.filter(x => x.id !== excluindo.id))
+      setExcluindo(null)
     } catch (err) {
-      alert('Erro ao deletar: ' + err.message)
+      setExcluirErro(err.message || String(err))
+    } finally {
+      setExcluindoBusy(false)
     }
   }
 
@@ -144,11 +171,11 @@ export default function Home() {
                   </span>
                   
                   <button
-                    onClick={e => remover(e, v.id)}
+                    onClick={e => abrirExclusao(e, v)}
                     className="text-alerta/65 hover:text-alerta text-xs transition-colors p-1"
-                    title="Excluir Visita"
+                    title="Excluir vistoria"
                   >
-                    ✕
+                    🗑
                   </button>
                 </div>
               </div>
@@ -156,6 +183,67 @@ export default function Home() {
           ))}
         </div>
       </main>
+
+      {/* Modal de exclusao de vistoria */}
+      {excluindo && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !excluindoBusy && setExcluindo(null)}
+        >
+          <div
+            className="bg-concreto-900 border border-concreto-700 rounded-xl max-w-md w-full p-5 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-alerta font-semibold text-sm font-mono mb-1">
+              Excluir vistoria
+            </h3>
+            <p className="text-aco-200 text-sm mb-3">
+              <span className="font-semibold">{excluindo.pavimento || 'Sem nome'}</span>
+              <span className="text-aco-400 text-xs"> — {formatData(excluindo.data)}</span>
+            </p>
+            <div className="bg-concreto-800/60 border border-concreto-700/60 rounded-lg p-3 mb-3">
+              <p className="text-aco-300 text-xs leading-relaxed">
+                Isto apaga <span className="text-alerta font-semibold">permanentemente</span>:
+              </p>
+              <ul className="text-aco-400 text-[11px] font-mono mt-1.5 space-y-0.5">
+                <li>• o registro da vistoria (trajetória, calibração, ambientes)</li>
+                <li>• as fotos 360°, miniaturas e o mapa 3D no armazenamento</li>
+                {excluindo.video_r2_key && (
+                  <li>• o vídeo bruto enviado ({excluindo.video_r2_key.split('/').pop()})</li>
+                )}
+              </ul>
+            </div>
+            {excluirErro && (
+              <div className="bg-alerta/10 border border-alerta/40 rounded-lg p-3 mb-3">
+                <p className="text-alerta text-xs leading-relaxed">{excluirErro}</p>
+                <button
+                  onClick={() => confirmarExclusao(true)}
+                  disabled={excluindoBusy}
+                  className="mt-2 text-[11px] font-mono underline text-aco-300 hover:text-aco-100 disabled:opacity-50"
+                >
+                  Excluir só o registro (deixa os arquivos no armazenamento)
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setExcluindo(null)}
+                disabled={excluindoBusy}
+                className="px-4 py-2 text-xs font-mono rounded-lg border border-concreto-700 text-aco-300 hover:bg-concreto-800 disabled:opacity-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => confirmarExclusao(false)}
+                disabled={excluindoBusy}
+                className="px-4 py-2 text-xs font-mono rounded-lg bg-alerta/85 hover:bg-alerta text-white disabled:opacity-50 transition-colors"
+              >
+                {excluindoBusy ? 'Excluindo...' : 'Excluir definitivamente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
