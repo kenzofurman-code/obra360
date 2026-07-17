@@ -468,4 +468,279 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       VPS (ver `obra360_hosting_decision`).
     - **Deliberadamente adiado** (escolha do Pedro, opção "a" quando
       perguntado se preferia terminar o fluxo de 2 cliques primeiro ou
-      construir os dois modos junt
+      construir os dois modos juntos): o modo alternativo de medição por
+      altura de câmera (`medir_piso_por_altura_bastao()`, já existe em
+      `medir_panorama.py` mas sem uso, técnica clássica de apps de AR —
+      `distância = altura_câmera / tan(ângulo_elevação)`) fica pra depois
+      deste fluxo estar validado ponta a ponta.
+
+19. **Teste de Depth-Anything V2 Small como alternativa/fallback ao RANSAC
+    de landmarks — 2026-07-16, Pedro pediu pra testar depois de eu sugerir
+    como possível solução pro maior gap conhecido do item 16
+    (`medir_por_epipolar_fallback()` não implementado, cliques em regiões de
+    mapa esparso simplesmente falham).**
+    - Ideia: Depth-Anything estima profundidade densa por pixel a partir de
+      UMA FOTO SÓ (sem precisar de landmarks/matching entre keyframes). Como
+      cada quadro já tem `pose_raw`, dava pra usar profundidade + pose pra
+      obter o ponto 3D de qualquer clique direto — mas na prática, pra 2
+      pontos de uma MEDIÇÃO típica (largura de porta/janela/rachadura) que
+      normalmente aparecem na MESMA foto, nem precisa de pose_raw/mundo: os
+      2 pontos retroprojetados no espaço da própria câmera já dão a
+      distância entre eles. Isso é mais simples que todo o pipeline SLAM
+      atual — não usa `mapa.msg`, não usa RANSAC, não depende de quantos
+      keyframes existem perto do clique.
+    - **Problema identificado antes de testar**: as fotos do worker.py são
+      EQUIRETANGULARES (360°), mas Depth-Anything foi treinado em fotos de
+      câmera normal (pinhole) — rodar direto na equiretangular daria
+      profundidade geometricamente errada (distorção forte, principalmente
+      longe do "equador" da imagem). Fix: novo arquivo
+      `equirect_perspectiva.py` — `recortar_perspectiva(img, u_centro,
+      v_centro, fov_h_graus, tamanho_saida)` gera um recorte PINHOLE
+      retilíneo centrado em qualquer direção, usando a MESMA convenção
+      (u,v)→(longitude,latitude) de `raio_do_clique()` em
+      `medir_panorama.py` (não inventa mais uma convenção divergente em
+      cima das que já existem). Devolve também a matriz intrínseca `K` do
+      recorte, necessária pra depois retroprojetar (pixel, profundidade) em
+      ponto 3D.
+    - **Validado com dados reais nesta sessão** (não só revisão de código):
+      rodei `recortar_perspectiva()` contra o `quadro_0080.jpg` real (o
+      mesmo já usado nos testes do item 16) — o recorte resultante tem
+      linhas retas (junta do teto, quinas de parede) saindo RETAS, sem a
+      curvatura característica da distorção equiretangular, confirmando que
+      a reprojeção geométrica está correta. Também validei
+      `retroprojetar()`/`amostrar_profundidade()` com um teste sintético:
+      2 pontos 3D conhecidos, projetados pela mesma fórmula pinhole,
+      retroprojetados de volta — bateram exatos (erro < 1e-6), confirmando
+      que a matemática de volta a 3D está correta.
+    - **NÃO validado ainda: a parte que realmente importa (o modelo em
+      si)**. Este sandbox de desenvolvimento bloqueia `huggingface.co` (e
+      todos os mirrors alternativos testados: `cdn-lfs.huggingface.co`,
+      `modelscope.cn`, `gitee.com`, `sourceforge.net`) — só `pypi.org` e
+      `github.com` (páginas HTML, não os assets de release) estão
+      liberados. Não consegui baixar nenhum checkpoint do Depth-Anything V2
+      pra rodar de verdade. Novo arquivo `testar_depth_anything.py` está
+      pronto (recorta a foto, roda o modelo via `transformers`, retroprojeta
+      2 pontos clicados, compara com uma distância real opcional) mas
+      **precisa ser rodado na máquina do Pedro** (`pip install torch
+      transformers pillow`), não neste sandbox.
+    - **RODADO DE VERDADE pelo Pedro em 2026-07-16 — resultado NEGATIVO,
+      erro de 204%.** Model id correto descoberto nesse processo (meu
+      primeiro palpite, `Metric-Hypersim-Small-hf`, não existe — deu
+      `RepositoryNotFoundError`; o nome certo é `Metric-Indoor-Small-hf`,
+      "Hypersim" é só o nome do dataset sintético usado pra treinar essa
+      variante, não faz parte do model id). Teste real: 2 pontos nas bordas
+      do vão de uma porta em `quadro_0080.jpg` (distância real medida com
+      trena = 0.86m) → distância estimada = 2.62m (erro 204%). Diagnóstico
+      olhando o mapa de profundidade colorido: o vão inteiro (porta +
+      corredor escuro atrás dela) saiu como a coisa MAIS DISTANTE de toda a
+      cena — mais longe até que o fundo da sala do lado com janela. Os 2
+      pontos deram profundidade quase idêntica entre si (7.84 e 7.75,
+      consistente — são os 2 lados do MESMO vão), mas o valor absoluto
+      atribuído a essa região está inflado (~3x, o que bate com o padrão do
+      erro: 2.62/0.86 ≈ 3.0). Causa provável: área escura/sem textura
+      (corredor sem luz) confundida pelo modelo com "vazio distante" — falha
+      clássica de profundidade monocular em regiões sem informação visual,
+      e exatamente o tipo de cena (concreto bruto, sem iluminação) que o
+      checkpoint `Metric-Indoor-Small` (treinado em interiores MOBILIADOS e
+      iluminados do dataset Hypersim) não viu no treino.
+    - **Veredito, por ora**: mesma conclusão do upscale (item 17) — o
+      checkpoint métrico não generaliza bem pra cenas de obra em construção
+      sem acabamento, pelo menos não em áreas escuras/sem textura. Ainda não
+      testado numa parede lisa e bem iluminada (próximo passo sugerido, pra
+      isolar se o problema é so' de áreas escuras/sem textura ou mais
+      geral). Enquanto isso não for testado, não recomendo usar este método
+      como fallback de produção — ver item 20 pra uma alternativa mais
+      promissora que surgiu dessa mesma discussão.
+
+20. **Calibração automática de escala via altura da câmera (não a largura de
+    porta/janela do projeto) — 2026-07-16, ideia do Pedro depois do teste
+    negativo do Depth-Anything.** Pedro observou algo importante: usar a
+    largura de porta/janela EXTRAÍDA DA PLANTA como referência de calibração
+    (o que `calibrar_por_portas()` já faz) tem um problema de origem — na
+    obra, o que foi construído quase sempre diverge um pouco do projeto. A
+    altura da câmera acima do piso, por outro lado, é uma constante FÍSICA
+    do equipamento de captação (Pedro confirmou: 2.0m nesses frames), não
+    depende de nada ter sido construído conforme a planta.
+    - **Novo arquivo `calibrar_altura_camera.py`**: em vez de calibrar por
+      clique/porta, ajusta um plano por RANSAC (restrito a normais
+      quase-verticais, pra não confundir com parede) nos landmarks MAIS
+      BAIXOS de toda a nuvem de pontos do `mapa.msg` (candidatos a piso),
+      mede a distância perpendicular mediana de toda a trajetória da câmera
+      até esse plano (em unidades SLAM), e divide a altura real conhecida
+      (2.0m) por esse valor — `escala_slam_metros` automática, sem clicar
+      em nada, sem depender de nenhuma medida do projeto.
+    - **Bug encontrado e corrigido no mesmo dia, ANTES de confiar no
+      resultado**: a 1ª versão escolhia os candidatos a piso com um corte
+      relativo à altura da própria câmera (landmarks abaixo de um percentil
+      da altura da câmera, com margem pequena) — isso pegava majoritariamente
+      RODAPÉ/PAREDE perto da altura do operador (paredes têm muito mais
+      pontos SLAM que o piso, porque concreto liso dá pouca textura pro ORB
+      se agarrar), não o piso de verdade. Resultado da 1ª versão:
+      `escala_slam_metros=4.27`. Fix: cortar pelos percentis mais baixos da
+      nuvem de landmarks INTEIRA (não relativos à câmera) — busca
+      especificamente os pontos mais baixos que existem no mapa.
+    - **Validado com dados reais nesta sessão**: rodando a versão corrigida
+      contra o `mapa.msg` real (927 keyframes, 19763 landmarks) com 4 cortes
+      de percentil diferentes (10%, 15%, 20%, 25% dos landmarks mais
+      baixos), a escala resultante convergiu fortemente: 3.719, 3.723,
+      3.714, 3.729 — dispersão de só **0.4%** entre os 4 cortes (bem abaixo
+      da tolerância de 8% que a função `calibrar_por_altura_camera_robusto()`
+      exige pra aceitar o resultado). Isso é um sinal forte de que o plano
+      encontrado é estável e não um acaso do RANSAC — mesmo espírito de
+      "várias tentativas precisam concordar" já usado em
+      `medir_ponto_robusto()` (item 16).
+    - **Pendência real antes de confiar nisso pra produção**: ainda NÃO
+      cross-validado contra uma medida real independente. A única medida
+      real que o Pedro forneceu nesta sessão (a porta de 0.86m em
+      `quadro_0080.jpg`) fica exatamente na região de mapa esparso onde
+      `medir_ponto_robusto()` já falha (ver item 16/19) — não deu pra usar
+      essa porta pra confirmar a nova escala porque o RANSAC nem consegue
+      achar um ponto 3D ali. Próximo passo: pedir ao Pedro as coordenadas de
+      um par de pontos NUM LOCAL BEM MAPEADO (onde `medir_ponto_robusto` já
+      dá `sucesso=True`) com uma distância real conhecida (medida com trena),
+      pra comparar a distância em metros usando esta nova escala contra a
+      medida real — só depois disso decidir se essa calibração substitui ou
+      complementa `calibrar_por_portas()` no `worker.py`.
+    - **2ª tentativa de cross-check, mesma sessão, TAMBÉM sem sucesso**:
+      Pedro copiou `quadro_0714.jpg` (outro frame da mesma vistoria,
+      `pose_raw` via retrofit também, `dist_pose_s=0.003`) pra pasta de
+      teste e escolheu 2 pontos nas bordas de OUTRO vão de porta (pixels
+      245,580 e 931,498 do recorte gerado com `--u-centro 0.3 --v-centro
+      0.5 --fov 90 --tamanho 1200`). Convertendo de volta pra (u,v) e
+      rodando `medir_ponto_robusto()` com a pose real do quadro 714: os 2
+      pontos falharam de novo (dispersão 42+ unid. SLAM) — MESMO padrão do
+      quadro_0080: vãos de porta/corredor parecem ser sistematicamente mal
+      mapeados nesta vistoria (pouca luz/textura ali).
+    - **Varredura sistemática feita pra parar de tentar às cegas**: rodei
+      uma grade de (u,v) no `quadro_0714.jpg` (passo 0.10 em u e v, faixa
+      v=0.3–0.7) chamando `medir_ponto_robusto()` em cada ponto — achei 11
+      pontos com `confianca='alta'`, TODOS concentrados na faixa v≈0.5–0.7
+      (mais baixa da foto) e NENHUM no `quadro_0080.jpg` na mesma varredura
+      (0 pontos de alta confiança). Os pontos bons do quadro 714 caem quase
+      todos no CHÃO (base de parede/batente de porta encontrando o piso) —
+      condizente com o item 20: o piso tem poucos landmarks mas os que
+      existem são estáveis; paredes lisas no meio da foto (onde a maioria
+      dos cliques de medição realmente vai acontecer na prática, ex. altura
+      de porta/janela) continuam mal cobertas nesta vistoria específica.
+      Gerei `recorte_bompar_marcado.jpg` marcando 4 desses pontos bons
+      (A/B/C/D, todos onde uma parede encontra o chão) e pedi ao Pedro pra
+      medir com trena a distância real entre dois deles (B: base da parede
+      central: A: base do batente da porta à direita) — **resposta do
+      Pedro ainda pendente no momento em que esta sessão foi encerrada**.
+    - **Ponto em aberto pra próxima sessão**: assim que o Pedro der a
+      distância real entre B e A (ou C e D), rodar `medir_ponto_robusto()`
+      nesses 2 pontos com a pose do quadro 714 (já validada, `dist_pose_s`
+      baixo), multiplicar `distancia_slam` pela escala 3.721 e comparar com
+      a medida real — essa é a validação que falta pra decidir se
+      `calibrar_por_altura_camera_robusto()` pode substituir/complementar
+      `calibrar_por_portas()` em produção. Os scripts/dados pra isso já
+      estão prontos (`calibrar_altura_camera.py`, `equirect_perspectiva.py`,
+      `mapa.msg` e `manifest_corrigido.json` na pasta
+      `teste_medicao_e_resolucao/`) — só falta o número real do Pedro.
+
+## Pendências conhecidas (não resolvidas)
+
+- Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
+  3D) — só validado por esbuild até agora, não visualmente.
+- Confirmar com o Pedro se o `commit8` (max-h-[48vh]) resolveu de vez o
+  drawer — se não, o problema pode estar em outro ancestral flex, vale
+  inspecionar a árvore inteira de `Visita.jsx` em vez de só o wrapper local.
+- Resolver o backlog de git não commitado (ver seção acima).
+- PJ14 (porta de correr) não gera vão sintético — célula de TIPO vem colada
+  sem espaço (`CORRER(2FLS)/FIXO(2FLS)`), não bate com
+  `TIPOS_ESQUADRIA_VALIDOS`. Baixa prioridade.
+- 1 dos 54 ambientes extraídos saiu com nome errado (encoding/fonte
+  corrompida no PDF em si, não no parser). Baixa prioridade.
+- Item 4.5 do roadmap: botão "🕐 Histórico" (abaixo do Painel de Controle,
+  `commit11`) foi construído em 2026-07-15 — abre dropdown com as vistorias
+  do mesmo `local_id` por data, navega entre elas. **Ainda falta a outra
+  metade do item**: o viewer comparativo lado-a-lado de panoramas
+  sincronizados (por enquanto só troca de página, não compara). Vistorias
+  antigas sem `local_id` (anteriores a 2026-07-14) mostram o botão desabilitado.
+  **Não confirmado pelo Pedro rodando no navegador ainda.**
+- Candidatura ao SDK da Insta360 (https://www.insta360.com/sdk/apply):
+  rascunho de texto em inglês pro campo "Reasons for SDK application" foi
+  oferecido ao Pedro, sem confirmação se ele quer ajustar tom/tamanho ou
+  incluir um número concreto de vistorias/mês.
+- **CONFIRMADO 2026-07-16** (1º run real de ponta a ponta, vistoria
+  `Nf1KoXXPByR9G01WvnjO`, vídeo `VID_20260710_163541_00_022.mp4`, total
+  4586.9s): a suspeita do item 9 se confirma — o decode full-res do
+  `gerar_quadros.py` (2390.6s, 52.1% do tempo total) pesa mais que o
+  próprio `stella_vslam` (352.9s, 7.7%). Somando a redução de vídeo pro
+  SLAM (494.6s) com esse decode full-res, são 2885.2s (62.9% do total)
+  gastos decodificando o MESMO vídeo duas vezes. Upload pro R2 é o 2º maior
+  custo isolado (1333.7s, 29.1%). Ainda não otimizado — só medido/confirmado.
+- Falta ainda confirmar rodando de verdade: a mudança em `calibrar_por_portas`
+  (heading/espelhar fixos, só escala calibrada) — validado só
+  matematicamente/mock nesta sessão, não com Docker+SLAM real ainda (o run
+  de 2026-07-16 usou calibração automática por portas com sucesso -
+  residual 0.0057 - mas não isola especificamente essa mudança).
+- `super_resolucao.py` (item 13) — validado só com dados sintéticos. 1º run
+  real (2026-07-16, vistoria `Nf1KoXXPByR9G01WvnjO`) rodou com sucesso mas
+  **sem scipy instalado no Python local do Pedro** (o que roda
+  `gerar_quadros.py`, fora do Docker) - o guard funcionou como esperado (não
+  travou o pipeline), mas nenhum quadro dessa vistoria ganhou `pose_raw`.
+  Criado `retrofit_pose_raw.py` (novo script, não reprocessa a vistoria -
+  anexa `pose_raw` num manifest.json já gerado usando o `frame_trajectory.txt`
+  ainda salvo na pasta temp, casando pelo campo "t" - menos preciso que o
+  fluxo normal via fidx exato, ±0.5s típico) pra Pedro testar sem esperar
+  os ~76min de novo. 2º run (mesma vistoria, scipy já instalado) confirmou
+  `pose_raw` populado nos 1077/1077 quadros. **Ainda falta**: ganho visual
+  de fato em pontos vistos por 2+ quadros (nenhum teste real de fusão
+  multi-frame com pontos reais ainda — só o passo 1, achar o ponto 3D do
+  clique, foi testado com dados reais até agora, ver item 16) antes de
+  ligar isso na UI.
+- `medir_por_epipolar_fallback()` (usado quando `medir_ponto_robusto`/RANSAC
+  não acha plano confiável — ver item 16) continua **não implementado**.
+  Sem ele, cliques em regiões de mapa esparso ou pouco texturizadas
+  simplesmente falham (com motivo claro, não silenciosamente) em vez de
+  serem medidos por um método alternativo. Maior lacuna de cobertura atual
+  do `medir_panorama.py`/`super_resolucao.py`.
+- Item 16 (`medir_ponto_robusto`) validado com dados reais nos DOIS
+  sentidos: além dos cliques problemáticos já conhecidos (janelas de
+  `quadro_0080.jpg`, portas de `quadro_0559.jpg` — todos corretamente
+  `sucesso=False`), uma varredura de grade em `quadro_0559.jpg` achou casos
+  reais de `sucesso=True` (ex.: u=0.30/v=0.35 — as 6 combinações de busca
+  convergem com dispersão de só 0.018 unid. SLAM, `confianca='alta'`),
+  confirmando que a função não é excessivamente conservadora — ela aceita
+  cliques bem suportados por landmarks e só rejeita os genuinamente
+  inconsistentes. Ainda falta o Pedro confirmar visualmente (clicando na
+  interface, não via script) qual ponto da foto corresponde a u=0.30/v=0.35
+  antes de usar esse caso como referência de "bom clique" pra ensinar o uso
+  da ferramenta.
+- **Item 18 (ferramenta de medição) — nada testado no navegador ainda.**
+  Backend (`api_medicao.py`) validado com HTTP real neste sandbox, mas não
+  deployado na VPS. Frontend (`PanoramaViewer.jsx`/`Visita.jsx`) só validado
+  por leitura de código, sem browser real disponível nesta sessão. Ordem
+  sugerida pro Pedro testar: (1) subir `api_medicao.py` na VPS e configurar
+  `VITE_API_MEDICAO_URL` no Vercel; (2) rodar `worker.py` numa vistoria nova
+  pra confirmar que `mapa_url` é gravado no Firestore; (3) abrir essa
+  vistoria no site, clicar 📏, clicar "Calibrar" numa porta de largura
+  conhecida, depois medir outro trecho e comparar com a régua real; (4) se o
+  ponto clicado aparecer sistematicamente no lado/altura errado da foto,
+  provavelmente é a convenção do eixo v do UV (ver comentário em
+  `pegarUVDoClique` no `PanoramaViewer.jsx`).
+
+## Notas operacionais (não esquecer)
+
+- **Docker Desktop precisa estar rodando** antes de `worker.py` — sem ele,
+  `rodar_slam.py` falha e o worker cai (por design) no fallback de odometria
+  leve (`process_trajectory.py`), que é bem menos preciso. Não é bug; é
+  esperado no ambiente local do Pedro. Na VPS (Contabo Cloud VPS 20, KVM —
+  ver `obra360_hosting_decision`) isso não deve acontecer se o Docker estiver
+  provisionado corretamente no servidor.
+- Vercel exige rebuild manual/automático após `git push` pro frontend
+  refletir mudanças — scripts Python (`worker.py` e afins) rodam direto do
+  disco, sem build step.
+- Deploy do `worker.py --poll` na VPS ainda é o próximo passo pendente (ver
+  `obra360_hosting_decision`) — nesta sessão o worker ainda rodou na máquina
+  local do Pedro.
+
+## Onde encontrar o quê
+
+- `OBRA360_ROADMAP.md` — arquitetura, decisões de backend (R2 vs Firebase),
+  fases comerciais priorizadas, critério de "pronto pra vender".
+- `OBRA360_SLAM_HANDOFF.md` — pipeline SLAM em si (stella_vslam, scripts,
+  lições técnicas de coordenadas/aspecto, backlog de features).
+- Este arquivo — o que mudou na sessão de 2026-07-15 (pipeline P070) e notas
+  operacionais do dia a dia.
