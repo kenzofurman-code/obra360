@@ -13,6 +13,7 @@
 #   python gerar_quadros.py --video v.mp4 --trajetoria caminho.json --out quadros/
 #   [--intervalo 0.025] [--pausa-min 4] [--janela 0.5] [--formato jpg]
 #   [--qualidade 92] [--miniaturas 1024]
+#   [--upscale-metodo {none,bicubic,espcn}] [--upscale-escala 2]  (ver upscale_quadros.py)
 
 import os
 import sys
@@ -32,6 +33,19 @@ except ImportError:
 # ver motivo completo em video_io.py (opencv-python pra Windows falha com
 # alguns codecs, ex.: ProRes; ffmpeg do sistema e' agnostico de codec).
 from video_io import FFmpegVideoReader
+
+# Upscale opcional (bicubic/ESPCN) - discussao com o Pedro em 2026-07-16 sobre
+# EDSR/TensorFlow "pra aumentar a densidade de todos os frames". Testamos
+# bicubic/ESPCN/LapSRN/EDSR contra fotos reais do P070 (ver upscale_quadros.py
+# e CLAUDE.md pro resultado completo): EDSR e LapSRN ficaram de fora (custo
+# de CPU e memoria inviaveis pra ~1000+ fotos/vistoria, sem ganho medido);
+# so' bicubic/ESPCN sao oferecidos aqui - e' upscale COSMETICO (zoom menos
+# pixelado no viewer), nao recupera detalhe real. Import lazy (so' se
+# --upscale-metodo != none) pra nao virar dependencia obrigatoria do pipeline
+# principal (mesmo espirito do import de scipy em carregar_poses_tum).
+def _upscale_imagem_lazy(frame_bgr, metodo, escala, modelos_dir=None):
+    from upscale_quadros import upscale_imagem
+    return upscale_imagem(frame_bgr, metodo, escala, modelos_dir)
 
 
 def carregar_trajetoria(path):
@@ -86,6 +100,77 @@ def alvos_por_distancia(t, P, intervalo, pausa_min):
 
 def nitidez(gray_small):
     return float(cv2.Laplacian(gray_small, cv2.CV_64F).var())
+
+
+def carregar_poses_tum(path):
+    """
+    Le frame_trajectory.txt (TUM: t tx ty tz qx qy qz qw, uma linha por frame
+    RASTREADO pelo SLAM) e devolve (ts, pos_w [N,3], quat_wc [N,4]) em
+    unidades BRUTAS do SLAM (mesmo espaco/escala de mapa.msg) - servem so'
+    pra anexar uma pose por quadro no manifest.json (campo pose_raw), pro
+    super_resolucao.py reprojetar pontos 3D sem precisar do video bruto
+    depois. NAO tem nada a ver com a calibracao ancora/heading/escala do
+    floor plan (essa e' aplicada em cima de x/y separadamente, ja calculados
+    antes desta funcao ser chamada).
+
+    Mesma formula de conversao ja usada em medir_panorama.py e
+    super_resolucao.py (confirmada em github.com/stella-cv/stella_vslam/
+    discussions/614): rot_wc = rot_cw.T ; pos_w = -rot_wc @ trans_cw.
+
+    Import de scipy e' LAZY (só acontece se --traj-completa for passado) -
+    scipy NAO e' dependencia do pipeline principal, so' das ferramentas
+    exploratorias (medir_panorama.py/super_resolucao.py). Isso preserva o
+    comportamento de sempre do gerar_quadros.py pra quem nao passar esse
+    argumento (ex.: fallback de odometria leve, sem frame_trajectory.txt).
+
+    BUG CORRIGIDO 2026-07-16 (achado pelo Pedro - dist_pose_s saiu com
+    ~1.78 BILHAO de segundos numa vistoria real): o stella_vslam, quando
+    rodado sem --start-timestamp (nosso caso - ver rodar_slam.py), usa
+    "system timestamp" (relogio de parede real, tipo epoch Unix ~2026) em
+    vez de um tempo relativo ao video - o proprio log do stella_vslam ja
+    avisa isso ("--start-timestamp is not set. using system timestamp.").
+    Toda outra leitura de frame_trajectory.txt no pipeline (ver
+    tum_para_raw_waypoints em worker.py) sempre normaliza subtraindo
+    ts[0] antes de usar - esta funcao tinha esquecido esse passo, entao
+    pose_mais_perto() comparava um "t" pequeno (fidx/fps, tipo 0-560s)
+    contra um "ts" gigante (bilhoes) e sempre batia num indice arbitrario/
+    errado. Fix: normaliza ts subtraindo ts[0], igual ao resto do pipeline.
+    """
+    from scipy.spatial.transform import Rotation as RotLocal
+    ts, pos_w_lista, quat_wc_lista = [], [], []
+    with open(path, "r", encoding="utf-8") as f:
+        for linha in f:
+            linha = linha.strip()
+            if not linha or linha.startswith("#"):
+                continue
+            partes = linha.split()
+            if len(partes) < 8:
+                continue
+            tv, tx, ty, tz, qx, qy, qz, qw = map(float, partes[:8])
+            trans_cw = np.array([tx, ty, tz])
+            rot_cw = RotLocal.from_quat([qx, qy, qz, qw]).as_matrix()
+            rot_wc = rot_cw.T
+            pos_w = -rot_wc @ trans_cw
+            quat_wc = RotLocal.from_matrix(rot_wc).as_quat()
+            ts.append(tv)
+            pos_w_lista.append(pos_w)
+            quat_wc_lista.append(quat_wc)
+    if not ts:
+        return None
+    ts = np.array(ts)
+    ordem = np.argsort(ts)
+    ts = ts[ordem]
+    ts = ts - ts[0]  # normaliza pra relativo ao 1o frame rastreado (ver aviso acima)
+    return ts, np.array(pos_w_lista)[ordem], np.array(quat_wc_lista)[ordem]
+
+
+def pose_mais_perto(ts_poses, t_alvo):
+    """Indice da pose com timestamp mais proximo de t_alvo (ts_poses ja' esta
+    ordenado - busca binaria + checagem dos 2 vizinhos, mais barato que
+    argmin numa trajetoria densa com dezenas de milhares de poses)."""
+    idx = int(np.searchsorted(ts_poses, t_alvo))
+    candidatos = [c for c in (idx - 1, idx) if 0 <= c < len(ts_poses)]
+    return min(candidatos, key=lambda c: abs(ts_poses[c] - t_alvo))
 
 
 def subir_para_r2(pasta_local, bucket, prefix, tem_miniaturas):
@@ -158,6 +243,21 @@ def main():
                          "R2_SECRET_ACCESS_KEY (nunca no codigo).")
     ap.add_argument("--r2-prefix", default=None,
                     help="Pasta no bucket (padrao: nome do arquivo de video)")
+    ap.add_argument("--traj-completa", default=None,
+                    help="frame_trajectory.txt do stella_vslam (pose POR FRAME, TUM) - "
+                         "OPCIONAL. Se passado, cada quadro ganha um campo pose_raw no "
+                         "manifest.json (posicao+rotacao brutas do SLAM), usado depois "
+                         "pelo super_resolucao.py. Sem isso, os panoramas saem identicos "
+                         "a antes - so' fica indisponivel a super-resolucao por foto.")
+    ap.add_argument("--upscale-metodo", choices=["none", "bicubic", "espcn"], default="none",
+                    help="Upscale cosmetico opcional de CADA quadro antes de gravar "
+                         "(ver upscale_quadros.py - EDSR/LapSRN ficaram de fora por nao "
+                         "compensarem custo, ver CLAUDE.md). Padrao 'none' - comportamento "
+                         "identico a antes.")
+    ap.add_argument("--upscale-escala", type=int, default=2, choices=[2, 3, 4],
+                    help="Fator de ampliacao se --upscale-metodo != none (padrao 2x).")
+    ap.add_argument("--upscale-modelos-dir", default=None,
+                    help="Pasta com ESPCN_x{2,3,4}.pb (padrao: modelos_sr/ do repo).")
     args = ap.parse_args()
 
     print("[gerar_quadros] versao: fix-memoria-incremental-2026-07-12")
@@ -177,6 +277,28 @@ def main():
     n_pausas = sum(1 for _, tp in alvos if tp == "pausa")
     print(f"Trajetoria: {t[-1]:.0f}s | alvos: {len(alvos)} "
           f"({len(alvos)-n_pausas} por percurso + {n_pausas} em pausas)")
+
+    # Poses brutas do SLAM por frame (OPCIONAL) - permite anexar pose_raw a
+    # cada quadro no manifest.json, pro super_resolucao.py reprojetar pontos
+    # sem precisar do video bruto depois (ver carregar_poses_tum acima).
+    poses_tum = None
+    if args.traj_completa:
+        if not os.path.exists(args.traj_completa):
+            print(f"[AVISO] --traj-completa {args.traj_completa} nao encontrado - "
+                  "quadros NAO terao pose_raw (super-resolucao por foto ficara "
+                  "indisponivel nesta vistoria; panoramas normais seguem OK).")
+        else:
+            try:
+                poses_tum = carregar_poses_tum(args.traj_completa)
+            except ImportError:
+                print("[AVISO] scipy nao instalado (pip install scipy) - quadros "
+                      "NAO terao pose_raw; panoramas normais seguem OK.")
+            if poses_tum is None:
+                print(f"[AVISO] Nenhuma pose valida em {args.traj_completa} - "
+                      "quadros sem pose_raw.")
+            else:
+                print(f"[SuperRes-prep] {len(poses_tum[0])} poses carregadas de "
+                      f"--traj-completa pra anexar aos quadros (pose_raw).")
 
     t0 = time.time()
     cap = FFmpegVideoReader(args.video)
@@ -215,29 +337,56 @@ def main():
     ext = args.formato
     par = ([int(cv2.IMWRITE_JPEG_QUALITY), args.qualidade] if ext == "jpg"
            else [int(cv2.IMWRITE_WEBP_QUALITY), args.qualidade])
-    melhores = [None] * len(alvo_frames)  # (nitidez, frame_bgr) - so' os "em aberto"
+    melhores = [None] * len(alvo_frames)  # (nitidez, frame_bgr, fidx) - so' os "em aberto"
     manifest = []
     tam_total = 0
+    n_com_pose = 0
+    tempo_upscale_total = 0.0
+    upscale_metodo = args.upscale_metodo if args.upscale_metodo != "none" else None
+    if upscale_metodo:
+        print(f"[Upscale] Ativado: metodo={upscale_metodo} escala={args.upscale_escala}x "
+              f"(cosmetico - ver aviso no topo do arquivo/CLAUDE.md; nao recupera detalhe real)")
 
     def finalizar(k):
         """Grava (se houver frame) o alvo k no disco e libera a memoria dele."""
-        nonlocal tam_total
+        nonlocal tam_total, n_com_pose, tempo_upscale_total
         best = melhores[k]
         melhores[k] = None
         if best is None:
             return
-        sc, frame = best
+        sc, frame, fidx_best = best
         _, _, tv, tipo = alvo_frames[k]
         x = float(np.interp(tv, t, P[:, 0]))
         y = float(np.interp(tv, t, P[:, 1]))
         nome = f"quadro_{k:04d}.{ext}"
-        cv2.imwrite(os.path.join(args.out, nome), frame, par)
+        # Miniatura sempre a partir do frame ORIGINAL (nao upscalado) - ela e'
+        # reduzida de qualquer forma, upscalar antes so' desperdicaria tempo.
         if args.miniaturas:
             mini = cv2.resize(frame, (args.miniaturas, args.miniaturas * H // W),
                               interpolation=cv2.INTER_AREA)
             cv2.imwrite(os.path.join(args.out, "mini", nome), mini, par)
-        manifest.append(dict(id=k, t=round(tv, 1), x=x, y=y,
-                             arquivo=nome, tipo=tipo, nitidez=round(sc, 1)))
+        frame_gravar = frame
+        if upscale_metodo:
+            t_up = time.time()
+            frame_gravar = _upscale_imagem_lazy(frame, upscale_metodo, args.upscale_escala,
+                                                 args.upscale_modelos_dir)
+            tempo_upscale_total += time.time() - t_up
+        cv2.imwrite(os.path.join(args.out, nome), frame_gravar, par)
+        entrada = dict(id=k, t=round(tv, 1), x=x, y=y,
+                       arquivo=nome, tipo=tipo, nitidez=round(sc, 1))
+        if poses_tum is not None:
+            ts_poses, pos_w_poses, quat_wc_poses = poses_tum
+            # tempo EXATO (video-native, segundos) do frame realmente escolhido -
+            # nao o alvo tv da janela, que pode diferir ate +-args.janela dele.
+            t_exato = fidx_best / fps
+            idx = pose_mais_perto(ts_poses, t_exato)
+            entrada["pose_raw"] = dict(
+                pos_w=pos_w_poses[idx].tolist(),
+                quat_wc=quat_wc_poses[idx].tolist(),
+                dist_pose_s=round(float(abs(ts_poses[idx] - t_exato)), 3),
+            )
+            n_com_pose += 1
+        manifest.append(entrada)
         tam_total += os.path.getsize(os.path.join(args.out, nome))
 
     prox = 0  # primeiro alvo cuja janela ainda nao terminou
@@ -263,7 +412,7 @@ def main():
             sc = nitidez(small)
             for k in pertence:
                 if melhores[k] is None or sc > melhores[k][0]:
-                    melhores[k] = (sc, frame.copy())
+                    melhores[k] = (sc, frame.copy(), fidx)
         fidx += 1
         if fidx % 2000 == 0:
             decorrido = time.time() - t_loop
@@ -287,6 +436,13 @@ def main():
         json.dump(doc_manifest, f, indent=1)
     print(f"\n[SUCESSO] {len(manifest)} panoramas em '{args.out}' "
           f"({tam_total/1e6:.0f} MB) + manifest.json")
+    if poses_tum is not None:
+        print(f"[SuperRes-prep] {n_com_pose}/{len(manifest)} quadros com pose_raw "
+              "(super-resolucao por foto disponivel pra eles).")
+    if upscale_metodo:
+        media = tempo_upscale_total / max(len(manifest), 1)
+        print(f"[TIMING] Upscale ({upscale_metodo} {args.upscale_escala}x): "
+              f"{tempo_upscale_total:.1f}s total ({media:.2f}s/foto media)")
 
     if args.r2_bucket:
         subir_para_r2(args.out, args.r2_bucket, prefix, bool(args.miniaturas))

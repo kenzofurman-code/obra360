@@ -211,6 +211,76 @@ def intersectar_raio_plano(origem, direcao, plano_ponto, plano_normal):
     return origem + t * direcao
 
 
+def medir_ponto_robusto(keyframe, u, v, landmarks_pos,
+                         combos=((3.0, 0.3), (5.0, 0.4), (8.0, 0.5), (10.0, 0.6),
+                                 (12.0, 0.8), (15.0, 0.5)),
+                         k_max=60, limiar=0.02, min_inliers=8,
+                         tolerancia_consistencia=0.15):
+    """
+    Achado 2026-07-16 (Pedro, 1o teste com dados reais): a mesma medicao
+    (mesmo clique) dava respostas bem diferentes so' variando t_max/dist_max
+    - sinal de que o RANSAC as vezes acha um plano ERRADO (o mais numeroso
+    dentro do raio de busca escolhido, nao necessariamente o correto), nao
+    que a geometria do clique estivesse errada. Antes disso, a funcao aceitava
+    cegamente a primeira tentativa que "desse certo" (>= min_inliers).
+
+    Este wrapper roda ajustar_plano_ransac() varias vezes, com combinacoes
+    DIFERENTES de (t_max, dist_max), e so' aceita um resultado se os pontos
+    3D encontrados em cada tentativa CONVERGIREM entre si (distancia ao
+    centroide < tolerancia_consistencia, unidades SLAM). Se as tentativas
+    discordarem muito, retorna sucesso=False com o motivo, em vez de
+    devolver um numero que parece valido mas pode estar errado.
+
+    Retorna dict:
+      sucesso (bool), ponto3d (centroide das tentativas concordantes, ou
+      None), confianca ('alta'/'baixa'/None), dispersao (maior distancia ao
+      centroide, unidades SLAM), tentativas (lista de {t_max, dist_max,
+      ponto3d, n_landmarks} - ponto3d None se essa tentativa especifica
+      falhou), motivo (str, so' quando sucesso=False).
+    """
+    origem, direcao = raio_do_clique(keyframe, u, v)
+    tentativas = []
+    pontos_validos = []
+    for t_max, dist_max in combos:
+        candidatos = landmarks_proximos_ao_raio(
+            origem, direcao, landmarks_pos, t_max=t_max, dist_max=dist_max, k_max=k_max)
+        plano_ponto, plano_normal = ajustar_plano_ransac(
+            candidatos, limiar=limiar, min_inliers=min_inliers)
+        ponto3d = None
+        if plano_ponto is not None:
+            ponto3d = intersectar_raio_plano(origem, direcao, plano_ponto, plano_normal)
+        tentativas.append(dict(t_max=t_max, dist_max=dist_max, ponto3d=ponto3d,
+                                n_landmarks=len(candidatos)))
+        if ponto3d is not None:
+            pontos_validos.append(ponto3d)
+
+    if len(pontos_validos) < 2:
+        return dict(sucesso=False, ponto3d=None, confianca=None, dispersao=None,
+                     tentativas=tentativas,
+                     motivo=f"So' {len(pontos_validos)} de {len(combos)} combinacoes de busca "
+                            "encontraram um plano local - sem base pra checar consistencia "
+                            "(precisa de pelo menos 2 tentativas bem-sucedidas). Provavelmente "
+                            "poucos landmarks perto desse clique - tente um ponto com mais "
+                            "textura visivel (quina, objeto, marca).")
+
+    pontos_validos_arr = np.array(pontos_validos)
+    centro = pontos_validos_arr.mean(axis=0)
+    dispersao = float(np.linalg.norm(pontos_validos_arr - centro, axis=1).max())
+
+    if dispersao > tolerancia_consistencia:
+        return dict(sucesso=False, ponto3d=None, confianca=None, dispersao=dispersao,
+                     tentativas=tentativas,
+                     motivo=f"As {len(pontos_validos)} tentativas bem-sucedidas NAO convergem "
+                            f"entre si (dispersao maxima {dispersao:.3f} unid. SLAM > tolerancia "
+                            f"{tolerancia_consistencia}) - sinal de planos DIFERENTES sendo "
+                            "encontrados conforme o raio de busca muda, nao um resultado "
+                            "confiavel. Tente um ponto com mais textura visivel proxima.")
+
+    confianca = 'alta' if dispersao < tolerancia_consistencia / 3 else 'baixa'
+    return dict(sucesso=True, ponto3d=centro, confianca=confianca, dispersao=dispersao,
+                 tentativas=tentativas, motivo=None)
+
+
 def medir_por_epipolar_fallback(*args, **kwargs):
     """
     Fallback para quando a regiao clicada nao tem landmarks suficientes perto
@@ -298,6 +368,14 @@ def main():
     ap.add_argument("--dist-max", type=float, default=0.5, help="Raio de busca perpendicular ao redor do raio.")
     ap.add_argument("--k-max", type=int, default=60, help="Maximo de landmarks usados no ajuste do plano.")
     ap.add_argument("--limiar-plano", type=float, default=0.02, help="Tolerancia do RANSAC (unid. SLAM).")
+    ap.add_argument("--robusto", action="store_true",
+                     help="Roda o RANSAC com varias combinacoes de t_max/dist_max e so' aceita "
+                          "o resultado se convergirem entre si (ver medir_ponto_robusto) - mais "
+                          "lento, mas evita aceitar cegamente um plano errado que 'deu certo' "
+                          "por acaso com um raio de busca especifico. Recomendado; o modo antigo "
+                          "(sem --robusto) fica disponivel pra nao quebrar uso existente.")
+    ap.add_argument("--tolerancia-consistencia", type=float, default=0.15,
+                     help="Dispersao maxima aceitavel entre tentativas no modo --robusto (unid. SLAM).")
     # Modo simples, sem mapa/landmarks:
     ap.add_argument("--piso", action="store_true", help="Modo simples: altura do piso por altura de bastao (sem mapa).")
     ap.add_argument("--altura-bastao", type=float, default=None, help="Altura da camera acima do chao (metros).")
@@ -322,12 +400,38 @@ def main():
     kf1, u1, v1 = args.ponto1
     kf2, u2, v2 = args.ponto2
 
-    kw = dict(t_max=args.t_max, dist_max=args.dist_max, k_max=args.k_max, limiar=args.limiar_plano)
-    p1, n1 = medir_ponto_clique(keyframes, landmarks_pos, kf1, u1, v1, **kw)
-    p2, n2 = medir_ponto_clique(keyframes, landmarks_pos, kf2, u2, v2, **kw)
+    if args.robusto:
+        if kf1 not in keyframes or kf2 not in keyframes:
+            print(f"[ERRO] Keyframe {kf1 if kf1 not in keyframes else kf2} nao encontrado no mapa.")
+            sys.exit(1)
+        r1 = medir_ponto_robusto(keyframes[kf1], u1, v1, landmarks_pos,
+                                  k_max=args.k_max, limiar=args.limiar_plano,
+                                  tolerancia_consistencia=args.tolerancia_consistencia)
+        r2 = medir_ponto_robusto(keyframes[kf2], u2, v2, landmarks_pos,
+                                  k_max=args.k_max, limiar=args.limiar_plano,
+                                  tolerancia_consistencia=args.tolerancia_consistencia)
+        for label, r in [("ponto1", r1), ("ponto2", r2)]:
+            ok_falhas = sum(1 for t in r["tentativas"] if t["ponto3d"] is not None)
+            print(f"[Robusto] {label}: {'OK' if r['sucesso'] else 'FALHOU'} "
+                  f"({ok_falhas}/{len(r['tentativas'])} tentativas encontraram plano"
+                  + (f", dispersao={r['dispersao']:.3f}" if r['dispersao'] is not None else "")
+                  + (f", confianca={r['confianca']}" if r['confianca'] else "") + ")")
+            if not r["sucesso"]:
+                print(f"    Motivo: {r['motivo']}")
+        if not (r1["sucesso"] and r2["sucesso"]):
+            print("\n[ERRO] Nao foi possivel medir com confianca - ver motivos acima. "
+                  "Sem --robusto o script daria um numero mesmo assim (pode estar errado).")
+            sys.exit(1)
+        p1, p2 = r1["ponto3d"], r2["ponto3d"]
+        n1 = n2 = None
+    else:
+        kw = dict(t_max=args.t_max, dist_max=args.dist_max, k_max=args.k_max, limiar=args.limiar_plano)
+        p1, n1 = medir_ponto_clique(keyframes, landmarks_pos, kf1, u1, v1, **kw)
+        p2, n2 = medir_ponto_clique(keyframes, landmarks_pos, kf2, u2, v2, **kw)
 
     dist_slam = float(np.linalg.norm(p1 - p2))
-    print(f"[Medicao] Distancia bruta (unidades SLAM): {dist_slam:.5f}  (suporte: {n1} / {n2} landmarks)")
+    suporte = f"{n1} / {n2} landmarks" if n1 is not None else "ver [Robusto] acima"
+    print(f"[Medicao] Distancia bruta (unidades SLAM): {dist_slam:.5f}  (suporte: {suporte})")
 
     if args.calibrar_largura is not None:
         escala = calibrar_escala(dist_slam, args.calibrar_largura)

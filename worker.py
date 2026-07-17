@@ -208,11 +208,19 @@ def subir_json_r2(dados_dict, chave):
     return True
 
 
-def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir):
+def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=None):
     bucket = os.environ.get('R2_BUCKET_NAME')
     cmd = [sys.executable, os.path.join(SCRIPT_DIR, 'gerar_quadros.py'),
            '--video', video_path, '--trajetoria', waypoints_path,
            '--out', out_dir, '--miniaturas', '256']
+    # traj_tum (frame_trajectory.txt do stella_vslam) so' existe quando o SLAM
+    # rodou com sucesso (ver rodar_slam_se_disponivel) - se passado, cada
+    # quadro do manifest.json ganha pose_raw (posicao+rotacao brutas),
+    # habilitando super_resolucao.py sem precisar guardar o video bruto depois
+    # (ver discussao com o Pedro em 2026-07-15: super-resolucao migrou de
+    # "reprojetar no video bruto" pra "reprojetar nas proprias fotos do tour").
+    if traj_tum and os.path.exists(traj_tum):
+        cmd += ['--traj-completa', traj_tum]
     if bucket:
         cmd += ['--r2-bucket', bucket, '--r2-prefix', prefixo_r2]
     else:
@@ -334,7 +342,8 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
 
         # 5. Panoramas + upload R2
         out_dir = os.path.join(tmp_dir, 'quadros')
-        manifest_path = gerar_panoramas(video_path, waypoints_json, visita_id, out_dir)
+        manifest_path = gerar_panoramas(video_path, waypoints_json, visita_id, out_dir,
+                                         traj_tum=traj_tum)
         t0 = _marcar(t0, "5. Panoramas (gerar_quadros.py, inclui upload R2)")
 
         # 6. Atualiza Firestore (1 escrita so). Salva o aspecto da planta tambem -
