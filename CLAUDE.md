@@ -638,6 +638,66 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       `mapa.msg` e `manifest_corrigido.json` na pasta
       `teste_medicao_e_resolucao/`) — só falta o número real do Pedro.
 
+21. **DESCOBERTA GRANDE 2026-07-17 (sessão de retomada): 2 bugs que invalidam
+    as conclusões de medição dos itens 16/19/20.** Investigando a validação
+    da escala por altura (item 20), com acesso a shell/git direto nesta sessão:
+    - **BUG A — `pose_raw` e `mapa.msg` estão em REFERENCIAIS DIFERENTES.**
+      Casando keyframes do mapa com poses do manifest por timestamp
+      (vistoria `Nf1KoXXPByR9G01WvnjO`): distância mediana de 15.5 unid
+      entre os dois. Umeyama: rotação ~180° em torno do eixo vertical +
+      translação, escala IGUAL (s=1.0033), resíduo mediano 0.29 (drift
+      trajetória-vs-mapa-otimizado). Afeta TUDO que combina `pose_raw` com
+      landmarks do mapa: `super_resolucao.py`, `api_medicao.py`, e todos os
+      testes do item 16 feitos com pose_raw. As falhas "sistemáticas" em
+      vãos de porta e no quadro_0080 eram em grande parte ISSO (raio
+      atirado do lugar errado), não mapa esparso: com a pose corrigida,
+      7/8 cliques nas bordas da porta de 0.86m deram confiança alta
+      (antes: 1/8). Fix possível em runtime: Umeyama por timestamp entre
+      keyframes do mapa e frame_trajectory (ou usar keyframes do mapa
+      interpolados/slerp direto — validado nesta sessão).
+    - **BUG B — o RANSAC de plano local devolve ponto confiante mas ERRADO
+      quando a nuvem perto do raio é mista/inclinada.** Prova visual:
+      overlay dos landmarks reprojetados sobre `quadro_0080.jpg` (arquivos
+      `overlay_landmarks_*.jpg` em `teste_medicao_e_resolucao/`) mostra que
+      na direção da porta os landmarks estão a 1.5–4.0 unid, mas o
+      RANSAC devolvia interseções a 0.8–1.0 com "confiança alta" — o plano
+      ajustado numa nuvem inclinada intersecta o raio onde não há nada. A
+      checagem de consistência (item 16) NÃO pega isso (todas as combos
+      concordam no mesmo plano errado).
+    - **Fix validado pro BUG B: seleção de landmarks POR REPROJEÇÃO NA
+      IMAGEM** (não por proximidade 3D ao raio): reprojeta os landmarks na
+      equiretangular com a pose correta, seleciona os que caem a <25px do
+      clique, mediana de profundidade com corte de outliers. Resultado no
+      único caso com trena real (porta 0.86m, quadro_0080): vão = 0.79
+      unid → com a escala da calibração por portas (~1.0 m/unid), 0.79m
+      vs 0.86m real = **erro 8.5%** (contra falha total/204% antes).
+    - **A escala real DESTA vistoria ≈ 1.0–1.1 m/unid** — confirmada por 3
+      vias independentes: calibração por portas (0.996 mediana ao longo da
+      trajetória), extensão do prédio (19×28 unid vs planta em metros,
+      54 ambientes ≈ 10m² cada), e agora a porta com trena via reprojeção
+      (1.089). Velocidade de caminhada implícita 0.52 m/s (plausível).
+    - **A escala por altura da câmera (3.721, item 20) está ERRADA para
+      esta vistoria** — o overlay prova que o piso de concreto liso NÃO
+      TEM landmarks (histograma: quase nada abaixo de y=-1.5, onde o piso
+      real deveria estar com escala 1.0); o "plano mais baixo" que a
+      calibração achou era rodapé/base de parede (0.42–0.54 abaixo da
+      câmera). `calibrar_altura_camera.py` não deve ir pra produção sem um
+      guard que detecte essa situação (ex.: comparar a escala resultante
+      com a da calibração por portas e recusar se divergirem muito).
+    - **A medida da trena B–A do item 20 NÃO é mais necessária pra escala**
+      (a validação veio da porta 0.86m) — mas 1-2 medidas extras de trena
+      em outros pontos continuam úteis pra confirmar o erro típico do
+      método por reprojeção.
+    - **Ainda NÃO implementado em código** (só validado em script ad-hoc
+      nesta sessão): (a) alinhamento pose_raw→mapa em
+      `gerar_quadros.py`/`retrofit_pose_raw.py`/`api_medicao.py`;
+      (b) `medir_por_reprojecao()` em `medir_panorama.py` substituindo/
+      complementando `medir_ponto_robusto()`; (c) atualizar
+      `super_resolucao.py` pra usar os dois fixes. Scripts de validação e
+      overlays estão em `teste_medicao_e_resolucao/`
+      (`varredura_q714_pontos_bons.json`, `feicoes_boas_q714.json`,
+      `validacao_escala_pontos.json`, `overlay_landmarks_rot_wc.jpg`).
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
@@ -689,37 +749,24 @@ real (não só lidos/revisados) — resultado numérico ao lado.
   de fato em pontos vistos por 2+ quadros (nenhum teste real de fusão
   multi-frame com pontos reais ainda — só o passo 1, achar o ponto 3D do
   clique, foi testado com dados reais até agora, ver item 16) antes de
-  ligar isso na UI.
-- `medir_por_epipolar_fallback()` (usado quando `medir_ponto_robusto`/RANSAC
-  não acha plano confiável — ver item 16) continua **não implementado**.
-  Sem ele, cliques em regiões de mapa esparso ou pouco texturizadas
-  simplesmente falham (com motivo claro, não silenciosamente) em vez de
-  serem medidos por um método alternativo. Maior lacuna de cobertura atual
-  do `medir_panorama.py`/`super_resolucao.py`.
-- Item 16 (`medir_ponto_robusto`) validado com dados reais nos DOIS
-  sentidos: além dos cliques problemáticos já conhecidos (janelas de
-  `quadro_0080.jpg`, portas de `quadro_0559.jpg` — todos corretamente
-  `sucesso=False`), uma varredura de grade em `quadro_0559.jpg` achou casos
-  reais de `sucesso=True` (ex.: u=0.30/v=0.35 — as 6 combinações de busca
-  convergem com dispersão de só 0.018 unid. SLAM, `confianca='alta'`),
-  confirmando que a função não é excessivamente conservadora — ela aceita
-  cliques bem suportados por landmarks e só rejeita os genuinamente
-  inconsistentes. Ainda falta o Pedro confirmar visualmente (clicando na
-  interface, não via script) qual ponto da foto corresponde a u=0.30/v=0.35
-  antes de usar esse caso como referência de "bom clique" pra ensinar o uso
-  da ferramenta.
-- **Item 18 (ferramenta de medição) — nada testado no navegador ainda.**
-  Backend (`api_medicao.py`) validado com HTTP real neste sandbox, mas não
-  deployado na VPS. Frontend (`PanoramaViewer.jsx`/`Visita.jsx`) só validado
-  por leitura de código, sem browser real disponível nesta sessão. Ordem
-  sugerida pro Pedro testar: (1) subir `api_medicao.py` na VPS e configurar
-  `VITE_API_MEDICAO_URL` no Vercel; (2) rodar `worker.py` numa vistoria nova
-  pra confirmar que `mapa_url` é gravado no Firestore; (3) abrir essa
-  vistoria no site, clicar 📏, clicar "Calibrar" numa porta de largura
-  conhecida, depois medir outro trecho e comparar com a régua real; (4) se o
-  ponto clicado aparecer sistematicamente no lado/altura errado da foto,
-  provavelmente é a convenção do eixo v do UV (ver comentário em
-  `pegarUVDoClique` no `PanoramaViewer.jsx`).
+  ligar isso na UI. **ATENÇÃO (2026-07-17): aplicar os fixes do item 21
+  antes de retomar isso.**
+- `medir_por_epipolar_fallback()` continua **não implementado** — mas ver
+  item 21: boa parte das falhas atribuídas a "mapa esparso" era o bug de
+  referencial; reavaliar a real necessidade dele depois dos fixes.
+- Item 16 (`medir_ponto_robusto`) — **as conclusões de validação foram
+  revisadas pelo item 21**: os testes com pose_raw estavam no referencial
+  errado, e o método de plano-RANSAC pode devolver ponto confiante e errado.
+  Substituir/complementar por `medir_por_reprojecao()` (item 21).
+- **Item 18 (ferramenta de medição) — nada testado no navegador ainda, e
+  agora BLOQUEADO pelos fixes do item 21** (api_medicao.py usa pose_raw +
+  mapa.msg no referencial errado e o RANSAC vulnerável). Ordem revisada:
+  (1) implementar fixes do item 21 no backend; (2) subir `api_medicao.py`
+  na VPS e configurar `VITE_API_MEDICAO_URL` no Vercel; (3) rodar
+  `worker.py` numa vistoria nova pra confirmar `mapa_url` no Firestore;
+  (4) testar 📏 no site contra medidas de trena conhecidas; (5) se o ponto
+  clicado aparecer no lado/altura errado, ver a convenção do eixo v do UV
+  (`pegarUVDoClique` no `PanoramaViewer.jsx`).
 
 ## Notas operacionais (não esquecer)
 
@@ -735,6 +782,15 @@ real (não só lidos/revisados) — resultado numérico ao lado.
 - Deploy do `worker.py --poll` na VPS ainda é o próximo passo pendente (ver
   `obra360_hosting_decision`) — nesta sessão o worker ainda rodou na máquina
   local do Pedro.
+- **CUIDADO (descoberto 2026-07-17): o sync entre o lado Windows e o
+  sandbox do Cowork pode TRUNCAR arquivos que CRESCEM** (o conteúdo novo é
+  gravado mas cortado no tamanho antigo do arquivo, terminando no meio de
+  uma palavra). Foi a causa dos vários arquivos truncados encontrados no
+  working tree nesta sessão (worker.py, PanoramaViewer.jsx, Visita.jsx,
+  upscale_quadros.py, testar_depth_anything.py, CLAUDE.md). Mitigação:
+  depois de editar arquivo grande, conferir `tail` + tamanho nos DOIS
+  lados antes de commitar; commitar logo pra prender o conteúdo certo no
+  git.
 
 ## Onde encontrar o quê
 
@@ -742,5 +798,5 @@ real (não só lidos/revisados) — resultado numérico ao lado.
   fases comerciais priorizadas, critério de "pronto pra vender".
 - `OBRA360_SLAM_HANDOFF.md` — pipeline SLAM em si (stella_vslam, scripts,
   lições técnicas de coordenadas/aspecto, backlog de features).
-- Este arquivo — o que mudou na sessão de 2026-07-15 (pipeline P070) e notas
+- Este arquivo — o que mudou nas sessões de 2026-07-15/16/17 e notas
   operacionais do dia a dia.
