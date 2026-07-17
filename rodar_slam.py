@@ -186,6 +186,13 @@ def main():
                     help="Nome/tag da imagem Docker do stella_vslam (padrao: stella_vslam-socket)")
     ap.add_argument("--max-lado", type=int, default=1920,
                     help="Largura maxima do video antes de rodar o SLAM (padrao 1920)")
+    ap.add_argument("--video-reduzido-out", default=None,
+                    help="Se dado, salva uma copia do video reduzido (o mesmo que alimenta o "
+                         "SLAM) nesse caminho - o worker passa ele pro gerar_quadros.py como "
+                         "--video-analise, evitando decodificar o video full-res inteiro de "
+                         "novo so' pra escolher os frames mais nitidos (era 52%% do tempo "
+                         "total do pipeline, ver CLAUDE.md). Se o video ja for pequeno (sem "
+                         "reducao), nada e' salvo (o original ja e' barato de decodificar).")
     ap.add_argument("--vocab", default=VOCAB_CACHE,
                     help="Caminho do orb_vocab.fbow (baixa automaticamente se nao existir)")
     args = ap.parse_args()
@@ -212,6 +219,14 @@ def main():
     try:
         _, _, fps_original = probe_video(args.video)
         video_final, cols, rows = reduzir_video(args.video, work_dir, args.max_lado, fps_original)
+
+        if args.video_reduzido_out and video_final != args.video:
+            # copia ANTES do SLAM rodar - se o SLAM falhar depois, a copia ja
+            # esta salva (inutil sem trajetoria, mas barata); se a reducao nao
+            # aconteceu (video ja pequeno), nao salva nada de proposito.
+            shutil.copy(video_final, args.video_reduzido_out)
+            print(f"[SLAM] Video reduzido copiado para {args.video_reduzido_out} "
+                  "(reuso na selecao de frames do gerar_quadros.py)")
 
         t0 = time.time()
         video_nome = "video_slam.mp4"

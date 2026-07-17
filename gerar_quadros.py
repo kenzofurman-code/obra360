@@ -32,7 +32,7 @@ except ImportError:
 # Leitura do video via ffmpeg (video_io.py) em vez de cv2.VideoCapture direto -
 # ver motivo completo em video_io.py (opencv-python pra Windows falha com
 # alguns codecs, ex.: ProRes; ffmpeg do sistema e' agnostico de codec).
-from video_io import FFmpegVideoReader
+from video_io import FFmpegVideoReader, extrair_frame_no_tempo, probe_video
 
 # Upscale opcional (bicubic/ESPCN) - discussao com o Pedro em 2026-07-16 sobre
 # EDSR/TensorFlow "pra aumentar a densidade de todos os frames". Testamos
@@ -233,6 +233,16 @@ def main():
                     help="Pausa mais longa que isso (s) ganha quadro extra (padrao 4)")
     ap.add_argument("--janela", type=float, default=0.5,
                     help="Meia-janela (s) para buscar o frame mais nitido (padrao 0.5)")
+    ap.add_argument("--video-analise", default=None,
+                    help="Copia REDUZIDA do mesmo video (ex.: a que o rodar_slam.py ja gera "
+                         "pro stella_vslam, ver --video-reduzido-out). Se dada, a varredura "
+                         "de nitidez decodifica ELA (rapida) em vez do video full-res "
+                         "inteiro, e so' os ~frames ESCOLHIDOS sao extraidos do original "
+                         "via seek (extrair_frame_no_tempo). Motivo: o decode full-res era "
+                         "52%% do tempo total do pipeline (medido 2026-07-16, ver CLAUDE.md) "
+                         "- a nitidez ja era calculada numa versao 640px do frame, entao a "
+                         "selecao na copia reduzida escolhe praticamente os mesmos frames. "
+                         "Sem a flag: comportamento identico ao de antes.")
     ap.add_argument("--formato", choices=["jpg", "webp"], default="jpg")
     ap.add_argument("--qualidade", type=int, default=92)
     ap.add_argument("--miniaturas", type=int, default=0,
@@ -300,10 +310,37 @@ def main():
                 print(f"[SuperRes-prep] {len(poses_tum[0])} poses carregadas de "
                       f"--traj-completa pra anexar aos quadros (pose_raw).")
 
+    # modo analise (ver help da flag): varre a copia reduzida, extrai so' os
+    # escolhidos do original. Cai pro modo classico com aviso se a copia nao
+    # servir (fps diferente = indices de frame nao mapeiam 1:1).
+    video_varredura = args.video
+    info_original = None
+    if args.video_analise:
+        if not os.path.exists(args.video_analise):
+            print(f"[AVISO] --video-analise nao encontrado ({args.video_analise}) - "
+                  "usando o video original (decode full-res, mais lento).")
+        else:
+            try:
+                info_original = probe_video(args.video)
+                fps_orig = info_original[0]
+                fps_ana = probe_video(args.video_analise)[0]
+                if abs(fps_orig - fps_ana) > 0.01 * max(fps_orig, 1e-9):
+                    print(f"[AVISO] fps difere entre original ({fps_orig:.3f}) e analise "
+                          f"({fps_ana:.3f}) - indices nao mapeiam; usando o original.")
+                    info_original = None
+                else:
+                    video_varredura = args.video_analise
+                    print(f"[Analise] Varredura de nitidez na copia reduzida "
+                          f"({os.path.basename(args.video_analise)}); frames escolhidos "
+                          "serao extraidos do original via seek.")
+            except Exception as e:
+                print(f"[AVISO] Falha ao inspecionar videos ({e}) - usando o original.")
+                info_original = None
+
     t0 = time.time()
-    cap = FFmpegVideoReader(args.video)
+    cap = FFmpegVideoReader(video_varredura)
     if not cap.isOpened():
-        print(f"Erro ao abrir o video: {args.video}")
+        print(f"Erro ao abrir o video: {video_varredura}")
         sys.exit(1)
     print(f"[TIMING] Abrir video (ffmpeg pipe): {time.time() - t0:.1f}s")
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -342,6 +379,9 @@ def main():
     tam_total = 0
     n_com_pose = 0
     tempo_upscale_total = 0.0
+    tempo_extracao_total = 0.0
+    n_extraidos = 0
+    n_extracao_falhou = 0
     upscale_metodo = args.upscale_metodo if args.upscale_metodo != "none" else None
     if upscale_metodo:
         print(f"[Upscale] Ativado: metodo={upscale_metodo} escala={args.upscale_escala}x "
@@ -349,13 +389,30 @@ def main():
 
     def finalizar(k):
         """Grava (se houver frame) o alvo k no disco e libera a memoria dele."""
-        nonlocal tam_total, n_com_pose, tempo_upscale_total
+        nonlocal tam_total, n_com_pose, tempo_upscale_total, \
+            tempo_extracao_total, n_extraidos, n_extracao_falhou
         best = melhores[k]
         melhores[k] = None
         if best is None:
             return
         sc, frame, fidx_best = best
         _, _, tv, tipo = alvo_frames[k]
+        if info_original is not None:
+            # modo analise: busca o frame full-res exato no video ORIGINAL.
+            # +0.5 frame pra cair no MEIO do intervalo do frame alvo (evita
+            # arredondar pro anterior na fronteira do seek).
+            t_ext = time.time()
+            ok_ext, frame_full = extrair_frame_no_tempo(
+                args.video, (fidx_best + 0.5) / fps, info=info_original)
+            tempo_extracao_total += time.time() - t_ext
+            if ok_ext:
+                frame = frame_full
+                n_extraidos += 1
+            else:
+                n_extracao_falhou += 1
+                print(f"[AVISO] Falha ao extrair frame full-res do alvo {k} "
+                      f"(fidx={fidx_best}) - usando o frame da copia reduzida "
+                      "(foto desse ponto fica em resolucao menor).")
         x = float(np.interp(tv, t, P[:, 0]))
         y = float(np.interp(tv, t, P[:, 1]))
         nome = f"quadro_{k:04d}.{ext}"
@@ -421,8 +478,13 @@ def main():
             print(f"  frame {fidx}/{total} | {decorrido:.0f}s decorridos | "
                   f"{taxa:.1f} frames/s decodificados | ETA {eta:.0f}s")
     cap.release()
-    print(f"[TIMING] Varredura do video (decode full-res + selecao de nitidez): "
+    rotulo = ("decode da copia reduzida" if info_original is not None
+              else "decode full-res")
+    print(f"[TIMING] Varredura do video ({rotulo} + selecao de nitidez): "
           f"{time.time() - t_loop:.1f}s ({fidx} frames)")
+    if info_original is not None:
+        print(f"[TIMING] Extracao dos frames escolhidos do video original (seek): "
+              f"{tempo_extracao_total:.1f}s ({n_extraidos} ok, {n_extracao_falhou} falhas)")
     # finaliza os alvos que restaram em aberto (janelas perto do fim do video)
     for k in range(prox, len(alvo_frames)):
         finalizar(k)

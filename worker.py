@@ -114,8 +114,13 @@ def rodar_slam_se_disponivel(video_path, tmp_dir):
     mapa_out = os.path.join(tmp_dir, 'mapa.msg')
     # --manter-mapa e' OBRIGATORIO por regra operacional (ver OBRA360_SLAM_HANDOFF.md):
     # o mapa.msg alimenta a ferramenta de medicao e o mapa persistente futuro.
+    # --video-reduzido-out: alem da trajetoria, o SLAM deixa a copia reduzida
+    # do video num caminho conhecido - gerar_panoramas reusa ela como
+    # --video-analise (evita re-decodificar o full-res inteiro, que era 52%
+    # do tempo total do pipeline - medido 2026-07-16, ver CLAUDE.md).
     cmd = [sys.executable, rodar_slam_path, '--video', video_path,
-           '--out', traj_out, '--manter-mapa', '--mapa-out', mapa_out]
+           '--out', traj_out, '--manter-mapa', '--mapa-out', mapa_out,
+           '--video-reduzido-out', os.path.join(tmp_dir, 'video_reduzido.mp4')]
     print(f"[SLAM] Rodando: {' '.join(cmd)}")
     try:
         subprocess.run(cmd, check=True)
@@ -179,8 +184,14 @@ def cortar_video_inicio(video_path, segundos, tmp_dir):
     if not segundos or segundos <= 0:
         return video_path
     saida = os.path.join(tmp_dir, 'video_cortado.mp4')
+    # -g/-keyint_min 15: keyframe a cada 15 frames (~0.5s). O seek exato do
+    # extrair_frame_no_tempo (usado pelo gerar_quadros.py --video-analise)
+    # decodifica do keyframe anterior ate o alvo - com o GOP padrao do x264
+    # (250 frames, ~8s) cada extracao decodificaria ate 8s de video full-res,
+    # matando o ganho da otimizacao. Arquivo fica um pouco maior (e' temp).
     cmd = ['ffmpeg', '-y', '-ss', str(segundos), '-i', video_path,
-           '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast', '-an', saida]
+           '-c:v', 'libx264', '-crf', '18', '-preset', 'veryfast',
+           '-g', '15', '-keyint_min', '15', '-an', saida]
     print(f"[Corte] Cortando {segundos}s do inicio do video (ffmpeg)...")
     subprocess.run(cmd, check=True, capture_output=True)
     return saida
@@ -237,11 +248,13 @@ def subir_arquivo_r2(caminho_local, chave, content_type='application/octet-strea
 
 
 def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=None,
-                     upscale_metodo=None, upscale_escala=2):
+                     upscale_metodo=None, upscale_escala=2, video_analise=None):
     bucket = os.environ.get('R2_BUCKET_NAME')
     cmd = [sys.executable, os.path.join(SCRIPT_DIR, 'gerar_quadros.py'),
            '--video', video_path, '--trajetoria', waypoints_path,
            '--out', out_dir, '--miniaturas', '256']
+    if video_analise and os.path.exists(video_analise):
+        cmd += ['--video-analise', video_analise]
     # traj_tum (frame_trajectory.txt do stella_vslam) so' existe quando o SLAM
     # rodou com sucesso (ver rodar_slam_se_disponivel) - se passado, cada
     # quadro do manifest.json ganha pose_raw (posicao+rotacao brutas),
@@ -397,7 +410,8 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
         out_dir = os.path.join(tmp_dir, 'quadros')
         manifest_path = gerar_panoramas(video_path, waypoints_json, visita_id, out_dir,
                                          traj_tum=traj_tum, upscale_metodo=upscale_metodo,
-                                         upscale_escala=upscale_escala)
+                                         upscale_escala=upscale_escala,
+                                         video_analise=os.path.join(tmp_dir, 'video_reduzido.mp4'))
         t0 = _marcar(t0, "5. Panoramas (gerar_quadros.py, inclui upload R2)")
 
         # 6. Atualiza Firestore (1 escrita so). Salva o aspecto da planta tambem -

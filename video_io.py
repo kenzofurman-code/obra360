@@ -114,6 +114,13 @@ class FFmpegVideoReader:
         # qualquer coisa), entao da pra detectar e cair pro proximo candidato
         # rapido, sem atrasar a abertura do video de verdade.
         candidatos_flags = [['-fps_mode', 'passthrough'], ['-vsync', '0'], []]
+        # fila de candidatos ainda nao tentados - se a deteccao rapida via
+        # poll() abaixo nao pegar a rejeicao (o processo pode demorar mais de
+        # 0.3s pra morrer em maquina fria/lenta - confirmado 2026-07-17 num
+        # sandbox: 'Unrecognized option fps_mode' so apareceu na 1a leitura),
+        # read() usa esta fila pra reabrir com a proxima variante em vez de
+        # desistir. Mesma cadeia, dois pontos de deteccao.
+        self._candidatos_restantes = list(candidatos_flags)
         # stderr vai pra um arquivo temporario (nao PIPE, pra nao arriscar
         # deadlock com 2 pipes - stdout com os frames e stderr - enchendo ao
         # mesmo tempo sem ninguem consumindo o segundo) e nao mais DEVNULL:
@@ -124,8 +131,16 @@ class FFmpegVideoReader:
         # (-1), que ja e' suficiente porque read() abaixo consome em pedacos;
         # um bufsize absurdamente grande e' um suspeito razoavel pra falha
         # silenciosa de pipe no Windows.
-        for flags in candidatos_flags:
-            cmd = ['ffmpeg', '-v', 'error', '-i', path,
+        self._abrir_processo()
+
+    def _abrir_processo(self):
+        """Abre (ou REABRE, apos rejeicao de flag detectada em read) o processo
+        do ffmpeg com a proxima variante de flags da fila. Marca _opened e
+        preenche _proc/_stderr_tmp em caso de sucesso."""
+        self._opened = False
+        while self._candidatos_restantes:
+            flags = self._candidatos_restantes.pop(0)
+            cmd = ['ffmpeg', '-v', 'error', '-i', self.path,
                    '-f', 'rawvideo', '-pix_fmt', 'bgr24', *flags, '-']
             stderr_tmp = tempfile.TemporaryFile(mode='w+b')
             try:
@@ -134,12 +149,12 @@ class FFmpegVideoReader:
                 print("[video_io] ffmpeg nao encontrado no PATH - instale o ffmpeg "
                       "e adicione ao PATH do sistema: https://ffmpeg.org/download.html")
                 return
-            time.sleep(0.3)  # tempo de sobra pro ffmpeg rejeitar uma opcao invalida
+            time.sleep(0.3)  # deteccao rapida; a definitiva e' na 1a leitura (read)
             if proc.poll() is not None and proc.returncode != 0:
                 stderr_tmp.seek(0)
                 erro = stderr_tmp.read().decode('utf-8', errors='replace').strip()
                 stderr_tmp.close()
-                if flags != candidatos_flags[-1]:
+                if self._candidatos_restantes:
                     print(f"[video_io] ffmpeg rejeitou {flags} ({erro or 'sem stderr'}) "
                           "- tentando a proxima variante...")
                     continue
@@ -152,16 +167,20 @@ class FFmpegVideoReader:
             self._opened = True
             return
 
+    def _ler_stderr_ffmpeg(self):
+        """Conteudo atual do stderr do ffmpeg (string vazia se nada/erro)."""
+        if self._stderr_tmp is None:
+            return ''
+        try:
+            self._stderr_tmp.seek(0)
+            return self._stderr_tmp.read().decode('utf-8', errors='replace').strip()
+        except Exception:
+            return ''
+
     def _dump_stderr_ffmpeg(self):
         """Mostra o stderr do ffmpeg (se algo foi escrito) - chamado quando a
         primeira leitura de frame falha, pra nao ficar cego igual antes."""
-        if self._stderr_tmp is None:
-            return
-        try:
-            self._stderr_tmp.seek(0)
-            conteudo = self._stderr_tmp.read().decode('utf-8', errors='replace').strip()
-        except Exception:
-            conteudo = ''
+        conteudo = self._ler_stderr_ffmpeg()
         if conteudo:
             print(f"[video_io] ffmpeg stderr:\n{conteudo}")
         else:
@@ -198,8 +217,26 @@ class FFmpegVideoReader:
             if self._primeiro_read:
                 # falhou logo no 1o frame - antes isso passava em silencio
                 # (stderr ia pro DEVNULL) e o pipeline inteiro terminava
-                # "com sucesso" gerando 0 panoramas sem nenhum aviso. Mostra
-                # o stderr do ffmpeg (se tiver) pra dar pista do motivo real.
+                # "com sucesso" gerando 0 panoramas sem nenhum aviso.
+                # Se o motivo foi opcao de CLI rejeitada (a deteccao rapida
+                # via poll() na abertura pode perder a corrida em maquina
+                # lenta), reabre com a proxima variante da cadeia e tenta de
+                # novo - sem isso, um unico sleep mal dimensionado derruba o
+                # pipeline inteiro (0 panoramas).
+                erro = self._ler_stderr_ffmpeg()
+                if (('Unrecognized option' in erro or 'Option not found' in erro)
+                        and self._candidatos_restantes):
+                    print(f"[video_io] ffmpeg rejeitou a flag na 1a leitura "
+                          f"({erro.splitlines()[0] if erro else 'sem stderr'}) - "
+                          "reabrindo com a proxima variante...")
+                    try:
+                        self._proc.stdout.close()
+                    except Exception:
+                        pass
+                    self._abrir_processo()
+                    if self._opened and self._proc is not None:
+                        return self.read()
+                    return False, None
                 print(f"[video_io] Falha ao ler o 1o frame de {self.path} "
                       f"(recebido {len(buf)}/{self._frame_bytes} bytes).")
                 self._dump_stderr_ffmpeg()
@@ -225,7 +262,7 @@ class FFmpegVideoReader:
         self._opened = False
 
 
-def extrair_frame_no_tempo(path, t_seg, timeout=30):
+def extrair_frame_no_tempo(path, t_seg, timeout=30, info=None):
     """
     Extrai UM frame exato no instante t_seg (segundos) via ffmpeg, SEM
     decodificar o video inteiro - usa '-ss' ANTES de '-i' ("input seeking" na
@@ -244,11 +281,18 @@ def extrair_frame_no_tempo(path, t_seg, timeout=30):
 
     Retorna (True, frame_bgr) ou (False, None) se a extracao falhar.
     """
-    try:
-        fps, width, height, _, duracao = probe_video(path)
-    except Exception as e:
-        print(f"[video_io] Erro ao inspecionar video com ffprobe: {e}")
-        return False, None
+    # info: resultado de probe_video(path) ja obtido pelo chamador - evita
+    # rodar ffprobe (subprocesso, ~0.1s) a cada frame quando o chamador vai
+    # extrair centenas de frames do MESMO video (ver gerar_quadros.py
+    # --video-analise). Superset estrito: sem info, comportamento identico.
+    if info is not None:
+        fps, width, height, _, duracao = info
+    else:
+        try:
+            fps, width, height, _, duracao = probe_video(path)
+        except Exception as e:
+            print(f"[video_io] Erro ao inspecionar video com ffprobe: {e}")
+            return False, None
     if width <= 0 or height <= 0:
         return False, None
     if duracao:
