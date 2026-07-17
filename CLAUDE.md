@@ -744,7 +744,22 @@ real (não só lidos/revisados) — resultado numérico ao lado.
   próprio `stella_vslam` (352.9s, 7.7%). Somando a redução de vídeo pro
   SLAM (494.6s) com esse decode full-res, são 2885.2s (62.9% do total)
   gastos decodificando o MESMO vídeo duas vezes. Upload pro R2 é o 2º maior
-  custo isolado (1333.7s, 29.1%). Ainda não otimizado — só medido/confirmado.
+  custo isolado (1333.7s, 29.1%). **OTIMIZADO 2026-07-17** (commit
+  `a558ece`): `rodar_slam.py --video-reduzido-out` preserva a cópia reduzida
+  que já era gerada pro SLAM; `gerar_quadros.py --video-analise` varre ELA
+  pra escolher o frame mais nítido (a nitidez já era calculada num downscale
+  de 640px) e extrai só os ~1000 frames escolhidos do original via seek
+  (`extrair_frame_no_tempo`, sem uso desde o item 13); `worker.py` liga as
+  duas pontas e o corte inicial reencoda com `-g 15` (GOP curto — sem isso
+  cada seek decodificaria até 8s de vídeo full-res). De brinde: o fallback
+  de flags do ffmpeg no `video_io.py` agora também detecta rejeição na 1ª
+  leitura (o `poll()` da abertura é corrida que máquina lenta perde —
+  reproduzido em sandbox gerando 0 panoramas em silêncio). **Validado só com
+  vídeo sintético** (mesmos quadros escolhidos nos 2 modos, 0 falhas de
+  extração) — confirmar os `[TIMING]` novos no próximo run real; se a
+  extração por seek ficar lenta em H264 de GOP longo (vídeo SEM corte
+  inicial vindo direto da câmera), o plano B é paralelizar a extração
+  (ThreadPool) ou reencodar com GOP curto antes.
 - Falta ainda confirmar rodando de verdade: a mudança em `calibrar_por_portas`
   (heading/espelhar fixos, só escala calibrada) — validado só
   matematicamente/mock nesta sessão, não com Docker+SLAM real ainda (o run
