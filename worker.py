@@ -208,7 +208,8 @@ def subir_json_r2(dados_dict, chave):
     return True
 
 
-def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=None):
+def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=None,
+                     upscale_metodo=None, upscale_escala=2):
     bucket = os.environ.get('R2_BUCKET_NAME')
     cmd = [sys.executable, os.path.join(SCRIPT_DIR, 'gerar_quadros.py'),
            '--video', video_path, '--trajetoria', waypoints_path,
@@ -221,6 +222,16 @@ def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=No
     # "reprojetar no video bruto" pra "reprojetar nas proprias fotos do tour").
     if traj_tum and os.path.exists(traj_tum):
         cmd += ['--traj-completa', traj_tum]
+    # Upscale cosmetico opcional (bicubic/ESPCN) - discussao com o Pedro em
+    # 2026-07-16 sobre EDSR/TensorFlow "aumentar a densidade de todos os
+    # frames". Testamos EDSR/LapSRN/ESPCN/bicubic contra fotos reais do P070:
+    # nenhuma rede recuperou detalhe real medivel (cenas escuras de obra sao
+    # o pior caso pra esses modelos) e EDSR/LapSRN sao caros demais (CPU/RAM)
+    # pra ~1000+ fotos/vistoria - ver upscale_quadros.py e CLAUDE.md pro
+    # resultado completo. So' bicubic/ESPCN ficam disponiveis aqui, como opcao
+    # exploratoria (padrao 'none' = comportamento identico a antes).
+    if upscale_metodo and upscale_metodo != 'none':
+        cmd += ['--upscale-metodo', upscale_metodo, '--upscale-escala', str(upscale_escala)]
     if bucket:
         cmd += ['--r2-bucket', bucket, '--r2-prefix', prefixo_r2]
     else:
@@ -233,7 +244,8 @@ def gerar_panoramas(video_path, waypoints_path, prefixo_r2, out_dir, traj_tum=No
 
 # ─── Pipeline de 1 vistoria ──────────────────────────────────────────────────
 
-def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
+def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
+                      upscale_metodo=None, upscale_escala=2):
     visita = firebase_client.get_visita(visita_id)
 
     ancora1 = visita.get('ancora1')
@@ -343,7 +355,8 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         # 5. Panoramas + upload R2
         out_dir = os.path.join(tmp_dir, 'quadros')
         manifest_path = gerar_panoramas(video_path, waypoints_json, visita_id, out_dir,
-                                         traj_tum=traj_tum)
+                                         traj_tum=traj_tum, upscale_metodo=upscale_metodo,
+                                         upscale_escala=upscale_escala)
         t0 = _marcar(t0, "5. Panoramas (gerar_quadros.py, inclui upload R2)")
 
         # 6. Atualiza Firestore (1 escrita so). Salva o aspecto da planta tambem -
@@ -390,6 +403,21 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None):
         elif manifest_path:
             print("[AVISO] R2_PUBLIC_URL nao definido - manifest_url nao foi salvo no Firestore "
                   f"(panoramas estao em {manifest_path}, so localmente/no bucket).")
+
+        # BUG ENCONTRADO E CORRIGIDO 2026-07-16 (Pedro reparou que os pontos/
+        # marcadores nao apareciam no site apos rodar worker.py): o dict
+        # `dados` era montado inteiro (status, calibracao, ambientes,
+        # waypoints_url, manifest_url) mas NUNCA era escrito no Firestore -
+        # faltava esta chamada. processar_vistoria.py (script manual mais
+        # antigo que o worker.py substituiu) chama firebase_client.
+        # atualizar_campos() corretamente; a chamada nao foi portada quando
+        # o worker.py foi escrito. Resultado: toda vistoria processada via
+        # worker.py ficava travada em status='processando' (ultimo valor
+        # gravado, no inicio da funcao) e NUNCA recebia waypoints_url,
+        # manifest_url, ambientes, calibracao ou status='processado' - o
+        # pipeline inteiro rodava (ate 79min neste video) e "funcionava" nos
+        # logs, mas o site nunca via nada disso.
+        firebase_client.atualizar_campos(visita_id, dados)
         t0 = _marcar(t0, "6. Atualizar Firestore")
         print(f"[OK] Vistoria {visita_id} processada com sucesso.")
         print(f"[TIMING] TOTAL da vistoria {visita_id}: {time.time() - t_visita_inicio:.1f}s")
@@ -435,6 +463,12 @@ def main():
                      help="Segundos a cortar do inicio do video (ex.: tempo parado "
                           "posicionando a camera antes de andar). Se omitido, usa o "
                           "campo corte_inicial_seg salvo na propria vistoria (padrao 0).")
+    ap.add_argument('--upscale-metodo', choices=['none', 'bicubic', 'espcn'], default='none',
+                     help="Upscale cosmetico opcional de cada panorama (ver "
+                          "upscale_quadros.py/CLAUDE.md - EDSR/LapSRN testados e "
+                          "descartados por custo sem ganho medido). Padrao 'none'.")
+    ap.add_argument('--upscale-escala', type=int, default=2, choices=[2, 3, 4],
+                     help="Fator de ampliacao se --upscale-metodo != none (padrao 2x).")
     args = ap.parse_args()
 
     if not os.path.exists(SERVICE_ACCOUNT):
@@ -445,7 +479,8 @@ def main():
     if args.poll:
         poll_loop(args.intervalo)
     elif args.id:
-        processar_visita(args.id, video_local=args.video, corte_inicial_seg=args.corte_inicial)
+        processar_visita(args.id, video_local=args.video, corte_inicial_seg=args.corte_inicial,
+                          upscale_metodo=args.upscale_metodo, upscale_escala=args.upscale_escala)
     else:
         print("[ERRO] Use --id <visita_id> [--video ...] para rodar uma vez, ou --poll para a fila.")
         sys.exit(1)
