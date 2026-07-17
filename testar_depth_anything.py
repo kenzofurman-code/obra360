@@ -30,14 +30,14 @@
 #   mesmo fluxo de "olhar o grid e escolher o pixel" que ja usamos nos
 #   testes anteriores do RANSAC, ver quadro80_janelas_grid.jpg)
 #
-# ATENCAO - checkpoint exato ainda NAO confirmado por mim (sem acesso a
-# huggingface.co pra conferir o model id certo neste sandbox): tente
-# "depth-anything/Depth-Anything-V2-Metric-Hypersim-Small-hf" primeiro
-# (fine-tuned em cenas de INTERIOR, mais perto do nosso caso que o de
-# Virtual KITTI/direcao); se o transformers reclamar que o id nao existe,
-# procure em https://huggingface.co/depth-anything o nome exato da variante
-# "Metric-Hypersim-Small" - so' o "-hf" no final as vezes muda entre
-# versoes do transformers.
+# Checkpoint: depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf -
+# CONFIRMADO 2026-07-16 rodando na maquina do Pedro (meu primeiro palpite,
+# "Metric-Hypersim-Small-hf", nao existe - deu RepositoryNotFoundError; o
+# nome certo na versao -hf/transformers e' "Metric-Indoor-Small", nao
+# "Hypersim-Small" - "Hypersim" e' soh o nome do dataset sintetico usado
+# pra treinar a variante INDOOR, nao faz parte do model id). Existe tambem
+# um "Metric-Outdoor-Small-hf" (treinado em Virtual KITTI/direcao) - nao
+# usar pro nosso caso (obra em construcao e' ambiente fechado).
 #
 # O QUE ESTE SCRIPT NAO FAZ (de proposito, primeira iteracao): nao usa
 # pose_raw nem tenta combinar profundidade de 2 fotos diferentes - os 2
@@ -125,8 +125,10 @@ def main():
     ap.add_argument('--v-centro', type=float, default=0.5)
     ap.add_argument('--fov', type=float, default=90.0, help="FOV horizontal do recorte, em graus")
     ap.add_argument('--tamanho', type=int, default=800)
-    ap.add_argument('--modelo', default='depth-anything/Depth-Anything-V2-Metric-Hypersim-Small-hf',
-                     help="Model id no Hugging Face - ver aviso no topo do arquivo, ainda nao confirmado")
+    ap.add_argument('--modelo', default='depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf',
+                     help="Model id no Hugging Face - confirmado 2026-07-16 (o palpite anterior, "
+                          "'Metric-Hypersim-Small-hf', nao existe - o nome certo na versao "
+                          "transformers e' 'Metric-Indoor-Small-hf')")
     ap.add_argument('--ponto1', help="px,py dentro do RECORTE (nao da foto 360 inteira). Se omitido, so' salva o recorte + depth map pra voce escolher.")
     ap.add_argument('--ponto2', help="px,py dentro do RECORTE, segundo ponto")
     ap.add_argument('--distancia-real-m', type=float, default=None,
