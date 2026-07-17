@@ -56,7 +56,9 @@ import requests
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
-from medir_panorama import carregar_mapa, medir_ponto_robusto, calibrar_escala
+from medir_panorama import (carregar_mapa, medir_ponto_robusto, calibrar_escala,
+                             medir_por_reprojecao, pose_no_frame_do_mapa,
+                             medir_vao_coplanar)
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache_mapas')
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -70,7 +72,7 @@ API_KEY = os.environ.get('MEDICAO_API_KEY')
 app = Flask(__name__)
 CORS(app)
 
-_cache_landmarks = {}  # mapa_url -> landmarks_pos (np.array)
+_cache_landmarks = {}  # mapa_url -> (keyframes, landmarks_pos)
 
 
 def _checar_api_key():
@@ -97,9 +99,9 @@ def _baixar_mapa(mapa_url):
         with open(caminho_cache, 'wb') as f:
             f.write(r.content)
         print(f"[api_medicao] Mapa baixado ({len(r.content)/1e6:.1f}MB em {time.time()-t0:.1f}s)")
-    _, _, landmarks_pos = carregar_mapa(caminho_cache)
-    _cache_landmarks[mapa_url] = landmarks_pos
-    return landmarks_pos
+    keyframes, _, landmarks_pos = carregar_mapa(caminho_cache)
+    _cache_landmarks[mapa_url] = (keyframes, landmarks_pos)
+    return _cache_landmarks[mapa_url]
 
 
 def _pose_do_ponto(ponto):
@@ -114,16 +116,44 @@ def _pose_do_ponto(ponto):
 
 
 def _medir_pontos(mapa_url, pontos, tolerancia_consistencia=0.15):
-    """pontos: lista de 2 dicts {pos_w, quat_wc, u, v}. Retorna (resultados,
-    erro) - resultados e' a lista de dict de medir_ponto_robusto por ponto
-    (na mesma ordem), erro e' None se ambos os pontos deram sucesso, ou uma
-    mensagem combinada dos motivos de falha caso contrario."""
-    landmarks_pos = _baixar_mapa(mapa_url)
+    """pontos: lista de 2 dicts {u, v, t} (preferido) ou {u, v, pos_w,
+    quat_wc} (legado). Retorna (resultados, erro) - resultados e' a lista de
+    dict por ponto (na mesma ordem), erro e' None se ambos os pontos deram
+    sucesso, ou uma mensagem combinada dos motivos de falha caso contrario.
+
+    FIX 2026-07-17 (item 21 do CLAUDE.md):
+    - A pose agora vem preferencialmente do campo 't' (tempo do quadro no
+      video, que o manifest.json ja tem): pose_no_frame_do_mapa() interpola
+      dos keyframes do PROPRIO mapa.msg - o referencial certo. O caminho
+      legado via pose_raw (pos_w/quat_wc) esta num referencial DIFERENTE do
+      mapa (~180 graus + translacao) e so' e' usado se 't' nao vier, com
+      aviso no resultado.
+    - medir_por_reprojecao() substitui medir_ponto_robusto() (o RANSAC de
+      plano podia devolver ponto confiante mas errado em nuvem mista)."""
+    keyframes, landmarks_pos = _baixar_mapa(mapa_url)
     resultados = []
     for p in pontos:
-        keyframe = _pose_do_ponto(p)
-        r = medir_ponto_robusto(keyframe, p['u'], p['v'], landmarks_pos,
-                                 tolerancia_consistencia=tolerancia_consistencia)
+        keyframe, aviso = None, None
+        if p.get('t') is not None:
+            keyframe = pose_no_frame_do_mapa(keyframes, float(p['t']))
+            if keyframe is None:
+                resultados.append(dict(sucesso=False, ponto3d=None, confianca=None,
+                                        dispersao=None,
+                                        motivo=f"Nenhum keyframe do mapa perto de t={p['t']}s "
+                                               "- trecho sem cobertura do SLAM."))
+                continue
+        elif 'pos_w' in p and 'quat_wc' in p:
+            keyframe = _pose_do_ponto(p)
+            aviso = ("pose_raw legada (frame da trajetoria, nao do mapa) - "
+                     "resultado pode sair deslocado; envie 't' do quadro no ponto.")
+        else:
+            resultados.append(dict(sucesso=False, ponto3d=None, confianca=None,
+                                    dispersao=None,
+                                    motivo="Ponto sem 't' nem pos_w/quat_wc."))
+            continue
+        r = medir_por_reprojecao(keyframe, p['u'], p['v'], landmarks_pos)
+        if aviso:
+            r['aviso'] = aviso
         resultados.append(r)
     if not all(r['sucesso'] for r in resultados):
         motivos = [r['motivo'] for r in resultados if not r['sucesso']]
@@ -153,9 +183,24 @@ def medir():
                                    'motivo': r['motivo']} for r in resultados]), 200
     p1, p2 = resultados[0]['ponto3d'], resultados[1]['ponto3d']
     dist_slam = float(np.linalg.norm(p1 - p2))
+    # Distancia principal: POR PONTO (cada clique com sua profundidade, regra
+    # do oclusor - ver medir_por_reprojecao). Validado na porta de 0.86m:
+    # erro 0.2%. A estimativa coplanar (uma profundidade comum pros 2
+    # cliques) e' devolvida como AUXILIAR: quando as duas divergem muito, e'
+    # sinal de medida incerta (superficie em angulo ou cluster contaminado)
+    # - o frontend pode avisar o usuario pra clicar de novo.
+    cop = medir_vao_coplanar(resultados[0], resultados[1])
     resposta = dict(sucesso=True, distancia_slam=dist_slam,
                      confianca=[r['confianca'] for r in resultados],
                      tempo_s=round(time.time() - t0, 2))
+    if cop['aplicavel']:
+        resposta['distancia_slam_coplanar'] = cop['distancia_slam']
+        div = abs(dist_slam - cop['distancia_slam']) / max(dist_slam, 1e-9)
+        resposta['divergencia_pct'] = round(div * 100, 1)
+        if div > 0.20:
+            resposta['aviso'] = ("As duas estimativas divergem "
+                                 f"{div*100:.0f}% - medida incerta, tente clicar "
+                                 "exatamente nas bordas/quinas do que quer medir.")
     if escala:
         resposta['distancia_m'] = dist_slam * float(escala)
     return jsonify(resposta)

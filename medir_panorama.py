@@ -296,6 +296,183 @@ def medir_por_epipolar_fallback(*args, **kwargs):
     )
 
 
+# ─── Fixes 2026-07-17 (item 21 do CLAUDE.md) ───────────────────────────────────────
+# BUG A: pose_raw (frame_trajectory.txt) esta num referencial DIFERENTE do
+#   mapa.msg (~180 graus de rotacao + translacao; escala igual). Usar pose_raw
+#   direto com os landmarks atira o raio do lugar errado. Fix:
+#   pose_no_frame_do_mapa() interpola a pose direto dos keyframes do proprio
+#   mapa (que por definicao estao no frame certo) pelo instante t do video.
+# BUG B: selecionar landmarks por proximidade 3D ao raio + plano RANSAC
+#   devolve ponto confiante mas ERRADO quando a nuvem perto do raio e' mista/
+#   inclinada (todas as combos concordam no MESMO plano errado - a checagem
+#   de consistencia de medir_ponto_robusto nao pega). Fix:
+#   medir_por_reprojecao() seleciona so' landmarks que reprojetam PERTO DO
+#   CLIQUE NA IMAGEM (realmente visiveis naquela direcao) e usa a mediana da
+#   profundidade. Validado contra a unica medida de trena real disponivel
+#   (porta 0.86m, quadro_0080, vistoria Nf1KoXXPByR9G01WvnjO): 0.79m -> erro
+#   8.5%, contra falha total/valores absurdos do metodo antigo.
+
+
+def keyframes_ordenados(keyframes):
+    """Keyframes ordenados por ts + ts relativo (ts - ts[0]) em segundos.
+    O stella_vslam sem --start-timestamp carimba epoch Unix (item 15 do
+    CLAUDE.md) - a normalizacao vale pros dois casos."""
+    kf_list = sorted(keyframes.values(), key=lambda k: k["ts"])
+    ts0 = kf_list[0]["ts"] if kf_list else 0.0
+    ts_rel = np.array([k["ts"] - ts0 for k in kf_list])
+    return kf_list, ts_rel
+
+
+def pose_no_frame_do_mapa(keyframes, t, max_gap_s=2.0):
+    """
+    Pose da camera no instante t do video, NO FRAME DO MAPA, interpolando
+    posicao (linear) e rotacao (slerp) entre os 2 keyframes que cercam t.
+
+    Retorna dict {pos_w, rot_wc} (compativel com raio_do_clique) ou None se
+    o keyframe mais proximo esta a mais de max_gap_s de t (trecho sem
+    cobertura do mapa - ai nao ha pose confiavel no frame certo).
+    """
+    from scipy.spatial.transform import Slerp
+    kf_list, ts_rel = keyframes_ordenados(keyframes)
+    if not kf_list:
+        return None
+    i = int(np.searchsorted(ts_rel, t))
+    ia, ib = max(0, i - 1), min(len(kf_list) - 1, i)
+    a, b = kf_list[ia], kf_list[ib]
+    ta, tb = float(ts_rel[ia]), float(ts_rel[ib])
+    if min(abs(t - ta), abs(tb - t)) > max_gap_s:
+        return None
+    if ib == ia or tb - ta < 1e-6:
+        return dict(pos_w=a["pos_w"].copy(), rot_wc=a["rot_wc"].copy())
+    w = float(np.clip((t - ta) / (tb - ta), 0.0, 1.0))
+    pos = (1.0 - w) * a["pos_w"] + w * b["pos_w"]
+    rots = Rot.concatenate([Rot.from_matrix(a["rot_wc"]), Rot.from_matrix(b["rot_wc"])])
+    rot = Slerp([0.0, 1.0], rots)([w])[0].as_matrix()
+    return dict(pos_w=pos, rot_wc=rot)
+
+
+def reprojetar_landmarks(keyframe, landmarks_pos):
+    """(u, v, dist) de cada landmark projetado na equiretangular da pose dada
+    - inverso exato de raio_do_clique(), vetorizado."""
+    d = landmarks_pos - keyframe["pos_w"]
+    dist = np.linalg.norm(d, axis=1)
+    dist = np.where(dist < 1e-9, 1e-9, dist)
+    dn = d / dist[:, None]
+    dc = (keyframe["rot_wc"].T @ dn.T).T  # mundo -> camera
+    lat = np.arcsin(np.clip(dc[:, 1], -1.0, 1.0))
+    lon = np.arctan2(dc[:, 0], dc[:, 2])
+    u = lon / (2.0 * math.pi) + 0.5
+    v = 0.5 - lat / math.pi
+    return u, v, dist
+
+
+def medir_por_reprojecao(keyframe, u, v, landmarks_pos, raio_px=120,
+                          largura_equirect=5760, min_landmarks=3,
+                          corte_outlier=0.15):
+    """
+    Ponto 3D do clique selecionando landmarks POR REPROJECAO NA IMAGEM:
+    so' os que caem a menos de raio_px (pixels da equiretangular NATIVA,
+    largura largura_equirect) do clique entram; profundidade = mediana com
+    corte de outliers (descarta fundo visto por fresta/borda); o ponto final
+    fica SOBRE o raio do clique, na profundidade mediana.
+
+    raio_px=120 na equirect de 5760 equivale a ~25px num recorte de 1200
+    (mesma tolerancia do teste validado com a trena).
+
+    Retorna dict no mesmo formato de medir_ponto_robusto():
+      sucesso, ponto3d, confianca, dispersao (MAD das profundidades, unid
+      SLAM), n_landmarks, motivo (quando sucesso=False).
+    """
+    us, vs, dist = reprojetar_landmarks(keyframe, landmarks_pos)
+    altura_equirect = largura_equirect / 2.0
+    du = np.minimum(np.abs(us - u), 1.0 - np.abs(us - u)) * largura_equirect
+    dv = np.abs(vs - v) * altura_equirect
+    m = (du * du + dv * dv) < float(raio_px) ** 2
+    n = int(m.sum())
+    if n < min_landmarks:
+        return dict(sucesso=False, ponto3d=None, confianca=None, dispersao=None,
+                     n_landmarks=n,
+                     motivo=f"So' {n} landmarks reprojetam a menos de {raio_px}px do clique "
+                            f"(minimo {min_landmarks}) - regiao sem textura mapeada. Tente "
+                            "clicar mais perto de uma quina/batente/objeto com textura.")
+    ds = dist[m]
+    # Cluster mais DENSO de profundidade (nao mediana global): num clique de
+    # BORDA (batente/quina) os landmarks misturam a superficie certa, o
+    # primeiro plano e o fundo visto pela fresta - a mediana global cai no
+    # meio de dois clusters. Pra cada profundidade candidata, conta vizinhos
+    # a menos de corte_outlier*profundidade e fica com a vizinhanca mais
+    # populosa (desempate: a mais proxima da camera, que e' a superficie
+    # OCLUSORA - a que o usuario ve e clica).
+    candidatos_cluster = []
+    for d0 in np.unique(ds):
+        m2c = np.abs(ds - d0) < corte_outlier * d0
+        candidatos_cluster.append((int(m2c.sum()), float(d0), m2c))
+    n_max = max(c[0] for c in candidatos_cluster)
+    # REGRA DO OCLUSOR: entre clusters de tamanho comparavel (>=80% do maior),
+    # fica com o MAIS PROXIMO da camera - o usuario clica no que VE, e a
+    # superficie visivel naquela direcao e' por definicao a mais proxima
+    # (as mais distantes so' aparecem por frestas/bordas do mesmo clique).
+    empatados = [c for c in candidatos_cluster if c[0] >= 0.8 * n_max]
+    _, _, melhor_m2 = min(empatados, key=lambda c: c[1])
+    ds2 = ds[melhor_m2]
+    prof = float(np.median(ds2))
+    disp = float(np.median(np.abs(ds2 - prof)))
+    origem, direcao = raio_do_clique(keyframe, u, v)
+    ponto3d = origem + direcao * prof
+    confianca = "alta" if (len(ds2) >= 6 and disp < 0.15 * prof) else "baixa"
+    return dict(sucesso=True, ponto3d=ponto3d, confianca=confianca,
+                 dispersao=disp, n_landmarks=int(len(ds2)), motivo=None,
+                 # profundidades BRUTAS (todas dentro do raio de pixels, antes
+                 # da escolha de cluster) - medir_vao_coplanar() precisa delas
+                 profundidades=ds.tolist(), origem=origem, direcao=direcao)
+
+
+def medir_vao_coplanar(r1, r2):
+    """
+    Estimativa alternativa da distancia entre 2 cliques ASSUMINDO que os dois
+    pontos estao na MESMA superficie aproximadamente equidistante da camera
+    (caso tipico de medicao real: largura de porta/janela/vao, os 2 lados do
+    mesmo plano). Junta as profundidades dos 2 cliques, acha o cluster comum
+    mais denso, e usa UMA profundidade D pros dois raios:
+        distancia = |direcao1*D - direcao2*D|
+    Isso elimina o maior erro do metodo por ponto (profundidades diferentes
+    em cada borda por causa de landmarks de fundo/primeiro plano).
+
+    r1/r2: dicts retornados por medir_por_reprojecao (mesma pose/quadro!).
+    Retorna dict {aplicavel, distancia_slam, profundidade, motivo}.
+    aplicavel=False se os cliques vieram de poses diferentes ou se os
+    clusters de profundidade dos 2 pontos nao se sobrepoem (ai a hipotese de
+    mesma superficie nao vale - use a distancia por ponto).
+    """
+    if not (r1.get("sucesso") and r2.get("sucesso")):
+        return dict(aplicavel=False, motivo="um dos pontos falhou")
+    if not np.allclose(r1["origem"], r2["origem"], atol=1e-9):
+        return dict(aplicavel=False,
+                     motivo="cliques de quadros/poses diferentes - hipotese de mesma "
+                            "superficie so' vale com os 2 cliques na mesma foto")
+    ds = np.array(r1["profundidades"] + r2["profundidades"], dtype=float)
+    candidatos = []
+    for d0 in np.unique(ds):
+        mc = np.abs(ds - d0) < 0.15 * d0
+        candidatos.append((int(mc.sum()), float(d0), mc))
+    n_max = max(c[0] for c in candidatos)
+    # mesma regra do oclusor de medir_por_reprojecao, agora no conjunto:
+    # exige ainda que o cluster tenha pontos dos DOIS cliques (checado abaixo)
+    validos = []
+    n1 = len(r1["profundidades"])
+    for nc, d0, mc in candidatos:
+        if nc >= 0.8 * n_max and bool(mc[:n1].any()) and bool(mc[n1:].any()):
+            validos.append((nc, d0, mc))
+    if not validos:
+        return dict(aplicavel=False,
+                     motivo="clusters de profundidade dos 2 cliques nao se sobrepoem - "
+                            "provavelmente superficies diferentes (use a distancia por ponto)")
+    _, _, melhor_m = min(validos, key=lambda c: c[1])
+    D = float(np.median(ds[melhor_m]))
+    dist = float(np.linalg.norm(r1["direcao"] * D - r2["direcao"] * D))
+    return dict(aplicavel=True, distancia_slam=dist, profundidade=D, motivo=None)
+
+
 # ─── Pipeline de medicao de 1 clique ────────────────────────────────────────
 
 def medir_ponto_clique(keyframes, landmarks_pos, kf_id, u, v, **kw):

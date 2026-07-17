@@ -688,15 +688,30 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       (a validação veio da porta 0.86m) — mas 1-2 medidas extras de trena
       em outros pontos continuam úteis pra confirmar o erro típico do
       método por reprojeção.
-    - **Ainda NÃO implementado em código** (só validado em script ad-hoc
-      nesta sessão): (a) alinhamento pose_raw→mapa em
-      `gerar_quadros.py`/`retrofit_pose_raw.py`/`api_medicao.py`;
-      (b) `medir_por_reprojecao()` em `medir_panorama.py` substituindo/
-      complementando `medir_ponto_robusto()`; (c) atualizar
-      `super_resolucao.py` pra usar os dois fixes. Scripts de validação e
-      overlays estão em `teste_medicao_e_resolucao/`
-      (`varredura_q714_pontos_bons.json`, `feicoes_boas_q714.json`,
-      `validacao_escala_pontos.json`, `overlay_landmarks_rot_wc.jpg`).
+    - **IMPLEMENTADO em código na mesma sessão (2026-07-17, tarde)**:
+      (a) `medir_panorama.py` ganhou `pose_no_frame_do_mapa()` (pose por
+      slerp dos keyframes do PRÓPRIO mapa.msg, via t do quadro — dispensa o
+      pose_raw e o problema de referencial inteiro), `reprojetar_landmarks()`
+      e `medir_por_reprojecao()` (seleção por reprojeção + cluster de
+      profundidade mais denso com REGRA DO OCLUSOR: entre clusters ≥80% do
+      maior, fica o mais próximo — você clica no que VÊ) e
+      `medir_vao_coplanar()` (estimativa auxiliar com profundidade única).
+      (b) `api_medicao.py`: pontos agora mandam `{u, v, t}` (pose_raw virou
+      fallback legado com aviso); usa `medir_por_reprojecao`; `/medir`
+      devolve `distancia_slam` (por ponto, principal) + coplanar/divergência
+      como diagnóstico. (c) `super_resolucao.py`: todas as poses (clique +
+      candidatos) vêm de `poses_no_frame_do_mapa()`. (d)
+      `PanoramaViewer.jsx`: envia `t` do quadro no ponto.
+      **VALIDADO na porta de 0.86m (trena real)**: por ponto 0.865 slam ×
+      escala 0.996 = **0.861m — erro 0.2%**; e o `/calibrar` HTTP real na
+      mesma porta devolveu escala 0.9944, batendo com a calibração por
+      portas (0.996) — os dois métodos independentes CONVERGEM. Teste HTTP
+      de ponta a ponta rodado neste sandbox (mapa.msg de 112MB servido
+      local): `/medir` → distancia_m=0.8614. Ressalva honesta: erro de 0.2%
+      tem sorte envolvida (uma única medida de trena); o coplanar deu 16%
+      no mesmo vão (porta vista em ângulo, profundidades 2.05/2.41
+      genuinamente diferentes — por isso o por-ponto é o principal).
+      Scripts/overlays de validação em `teste_medicao_e_resolucao/`.
 
 ## Pendências conhecidas (não resolvidas)
 
@@ -758,13 +773,13 @@ real (não só lidos/revisados) — resultado numérico ao lado.
   revisadas pelo item 21**: os testes com pose_raw estavam no referencial
   errado, e o método de plano-RANSAC pode devolver ponto confiante e errado.
   Substituir/complementar por `medir_por_reprojecao()` (item 21).
-- **Item 18 (ferramenta de medição) — nada testado no navegador ainda, e
-  agora BLOQUEADO pelos fixes do item 21** (api_medicao.py usa pose_raw +
-  mapa.msg no referencial errado e o RANSAC vulnerável). Ordem revisada:
-  (1) implementar fixes do item 21 no backend; (2) subir `api_medicao.py`
-  na VPS e configurar `VITE_API_MEDICAO_URL` no Vercel; (3) rodar
-  `worker.py` numa vistoria nova pra confirmar `mapa_url` no Firestore;
-  (4) testar 📏 no site contra medidas de trena conhecidas; (5) se o ponto
+- **Item 18 (ferramenta de medição) — nada testado no navegador ainda.**
+  Fixes do item 21 já implementados e validados no backend (erro 0.2% na
+  única trena disponível). Ordem: (1) ~~fixes item 21~~ FEITO; (2) subir
+  `api_medicao.py` na VPS e configurar `VITE_API_MEDICAO_URL` no Vercel;
+  (3) rodar `worker.py` numa vistoria nova pra confirmar `mapa_url` no
+  Firestore; (4) testar 📏 no site contra medidas de trena conhecidas
+  (colecionar mais medidas reais — só existe UMA até agora); (5) se o ponto
   clicado aparecer no lado/altura errado, ver a convenção do eixo v do UV
   (`pegarUVDoClique` no `PanoramaViewer.jsx`).
 

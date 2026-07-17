@@ -84,7 +84,26 @@ from medir_panorama import (
     ajustar_plano_ransac,
     intersectar_raio_plano,
     medir_ponto_robusto,
+    medir_por_reprojecao,
+    pose_no_frame_do_mapa,
 )
+
+
+def poses_no_frame_do_mapa(quadros_por_id, keyframes):
+    """FIX 2026-07-17 (item 21 do CLAUDE.md): pose_raw (frame_trajectory)
+    esta num referencial DIFERENTE do mapa.msg (~180 graus + translacao).
+    Esta funcao devolve {quadro_id: pose} com as poses interpoladas dos
+    KEYFRAMES DO PROPRIO MAPA (via campo 't' de cada quadro) - o referencial
+    certo pra combinar com os landmarks. Quadros em trechos sem cobertura de
+    keyframes ficam de fora do dict (sem pose confiavel)."""
+    poses = {}
+    for qid, q in quadros_por_id.items():
+        if q.get("t") is None:
+            continue
+        pose = pose_no_frame_do_mapa(keyframes, float(q["t"]))
+        if pose is not None:
+            poses[qid] = pose
+    return poses
 
 
 # ─── Manifest (quadros do tour, com pose_raw opcional por quadro) ───────────
@@ -147,7 +166,8 @@ def reprojetar_ponto(pos_w, rot_wc, ponto3d):
 
 def selecionar_quadros_candidatos(quadros_por_id, ponto3d, quadro_clicado_id,
                                    dist_min=0.3, dist_max=8.0,
-                                   intervalo_min_s=0.0, max_frames=12):
+                                   intervalo_min_s=0.0, max_frames=12,
+                                   poses_por_id=None):
     """
     Reprojeta o ponto 3D em CADA quadro que tenha pose_raw, filtra por
     distancia camera->ponto plausivel e prioriza os mais PROXIMOS (melhor
@@ -165,9 +185,16 @@ def selecionar_quadros_candidatos(quadros_por_id, ponto3d, quadro_clicado_id,
     Retorna lista de dicts {id, arquivo, u, v, dist}, com o quadro-ancora
     sempre em 1o lugar.
     """
+    def _pose(qid, quadro):
+        # poses_por_id (frame do MAPA, fix item 21) tem prioridade; fallback
+        # legado pose_raw so' se o dict nao for passado.
+        if poses_por_id is not None:
+            return poses_por_id.get(qid)
+        return quadro_para_pose(quadro)
+
     candidatos = []
     for qid, quadro in quadros_por_id.items():
-        pose = quadro_para_pose(quadro)
+        pose = _pose(qid, quadro)
         if pose is None:
             continue
         r = reprojetar_ponto(pose["pos_w"], pose["rot_wc"], ponto3d)
@@ -187,7 +214,7 @@ def selecionar_quadros_candidatos(quadros_por_id, ponto3d, quadro_clicado_id,
         # mesmo assim, sem o filtro de distancia, pra garantir que a ancora
         # do alinhamento exista.
         quadro_click = quadros_por_id.get(quadro_clicado_id)
-        pose_click = quadro_para_pose(quadro_click) if quadro_click else None
+        pose_click = _pose(quadro_clicado_id, quadro_click) if quadro_click else None
         if pose_click is not None:
             r = reprojetar_ponto(pose_click["pos_w"], pose_click["rot_wc"], ponto3d)
             if r is not None:
@@ -312,13 +339,18 @@ def super_resolver(pasta_quadros, mapa_path, clique, raio_px=64,
         raise ValueError(f"Quadro {quadro_id} nao encontrado no manifest.json "
                           f"({len(quadros_por_id)} quadros disponiveis).")
     quadro_clicado = quadros_por_id[quadro_id]
-    pose_clicada = quadro_para_pose(quadro_clicado)
+
+    # FIX 2026-07-17 (item 21): poses no frame do MAPA (keyframes do proprio
+    # mapa.msg via 't'), nao mais pose_raw (frame da trajetoria, referencial
+    # diferente do mapa).
+    keyframes, _, landmarks_pos = carregar_mapa(mapa_path)
+    poses_por_id = poses_no_frame_do_mapa(quadros_por_id, keyframes)
+    pose_clicada = poses_por_id.get(quadro_id)
     if pose_clicada is None:
         raise RuntimeError(
-            f"Quadro {quadro_id} nao tem pose_raw - esta vistoria foi processada "
-            "sem --traj-completa (SLAM indisponivel, ou processada antes deste "
-            "recurso existir). Super-resolucao precisa de pose por quadro; "
-            "reprocesse a vistoria com o worker.py atualizado.")
+            f"Quadro {quadro_id} sem pose no frame do mapa - ou a vistoria foi "
+            "processada sem SLAM (sem keyframes), ou o instante t desse quadro "
+            "esta num trecho sem cobertura de keyframes do mapa.msg.")
 
     # 1. Clique -> ponto 3D (MESMA geometria de medir_panorama.py, so' que a
     # pose de origem do raio agora vem do PROPRIO quadro, nao de um keyframe
@@ -333,11 +365,7 @@ def super_resolver(pasta_quadros, mapa_path, clique, raio_px=64,
     # si. super_resolucao.py tinha a MESMA vulnerabilidade (usava o RANSAC
     # single-shot direto) - trocado aqui pra usar medir_ponto_robusto tambem,
     # em vez de arriscar fundir quadros ancorados num ponto 3D errado.
-    keyframes, _, landmarks_pos = carregar_mapa(mapa_path)
-    resultado = medir_ponto_robusto(
-        pose_clicada, u0, v0, landmarks_pos,
-        k_max=k_max, limiar=limiar_plano, min_inliers=min_inliers,
-        tolerancia_consistencia=tolerancia_consistencia)
+    resultado = medir_por_reprojecao(pose_clicada, u0, v0, landmarks_pos)
     if not resultado["sucesso"]:
         raise RuntimeError(
             "Nao foi possivel achar um ponto 3D confiavel pra esse clique: "
@@ -345,17 +373,16 @@ def super_resolver(pasta_quadros, mapa_path, clique, raio_px=64,
             "medir_panorama.py --robusto). Tente clicar mais perto de uma "
             "quina, movel ou textura visivel.")
     ponto3d = resultado["ponto3d"]
-    n_tentativas_ok = sum(1 for t in resultado["tentativas"] if t["ponto3d"] is not None)
     print(f"[SuperRes] Ponto 3D estimado: {np.round(ponto3d, 4).tolist()} "
           f"(confianca={resultado['confianca']}, dispersao={resultado['dispersao']:.4f}, "
-          f"{n_tentativas_ok}/{len(resultado['tentativas'])} combinacoes de busca concordantes)")
+          f"{resultado['n_landmarks']} landmarks reprojetados perto do clique)")
 
     # 2. Selecao de quadros candidatos (reusa as fotos ja extraidas - sem
     # video, sem ffmpeg seek)
     escolhidos = selecionar_quadros_candidatos(
         quadros_por_id, ponto3d, quadro_id, dist_min=raio_camera_min,
         dist_max=raio_camera_max, intervalo_min_s=intervalo_min_s,
-        max_frames=max_frames)
+        max_frames=max_frames, poses_por_id=poses_por_id)
     if len(escolhidos) < 2:
         print("[AVISO] Menos de 2 quadros candidatos validos - esta vistoria/ponto "
               "nao tem material suficiente pra fusao real (o ponto so' foi visto "

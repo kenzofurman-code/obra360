@@ -493,12 +493,15 @@ export default function PanoramaViewer({
     // 2º, dispara a chamada pra api_medicao.py e limpa pra próxima medição.
     const tentarClicarMedicao = (clientX, clientY) => {
       const quadroAtual = quadrosRef.current[indiceAtualExibido]
-      if (!quadroAtual || !quadroAtual.pose_raw) {
+      // Fix 2026-07-17 (item 21 do CLAUDE.md): o campo essencial agora é o
+      // "t" do quadro - a API deriva a pose dos keyframes do próprio
+      // mapa.msg (referencial certo). pose_raw vira só fallback legado
+      // (está no referencial da trajetória, diferente do mapa).
+      if (!quadroAtual || (quadroAtual.t == null && !quadroAtual.pose_raw)) {
         if (onErroMedicaoRef.current) {
           onErroMedicaoRef.current(
-            'Esta foto não tem pose 3D (vistoria processada sem SLAM, ou sem ' +
-            '--traj-completa) - medição indisponível para ela. Tente noutra foto ' +
-            'da mesma vistoria.'
+            'Esta foto não tem tempo/pose 3D (vistoria processada sem SLAM) - ' +
+            'medição indisponível para ela. Tente noutra foto da mesma vistoria.'
           )
         }
         return
@@ -506,12 +509,14 @@ export default function PanoramaViewer({
       const hit = pegarUVDoClique(clientX, clientY)
       if (!hit) return
       adicionarMarcadorMedicao(hit.point, pontosMedicao.length === 0 ? 0xfbbf24 : 0x22d3ee)
-      pontosMedicao.push({
-        u: hit.u,
-        v: hit.v,
-        pos_w: quadroAtual.pose_raw.pos_w,
-        quat_wc: quadroAtual.pose_raw.quat_wc,
-      })
+      const ponto = { u: hit.u, v: hit.v }
+      if (quadroAtual.t != null) ponto.t = quadroAtual.t
+      else {
+        // fallback legado (referencial da trajetória - pode sair deslocado)
+        ponto.pos_w = quadroAtual.pose_raw.pos_w
+        ponto.quat_wc = quadroAtual.pose_raw.quat_wc
+      }
+      pontosMedicao.push(ponto)
 
       if (pontosMedicao.length < 2) return
 
