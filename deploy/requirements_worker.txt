@@ -1,0 +1,11 @@
+# Dependencias do worker.py (pipeline completo) numa VPS Ubuntu headless.
+# opencv-python-headless (nao opencv-python): servidor sem display - evita
+# dependencias de GUI/libGL que o pacote normal puxa.
+firebase-admin
+requests
+opencv-python-headless
+numpy
+scipy
+pymupdf
+boto3
+python-dotenv

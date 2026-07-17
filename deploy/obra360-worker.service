@@ -1,0 +1,17 @@
+# Servico systemd do worker do Obra360 (fila de vistorias, worker.py --poll).
+# Instalado por deploy/vps_worker_setup.sh em /etc/systemd/system/.
+# Logs: journalctl -u obra360-worker -f
+[Unit]
+Description=Obra360 worker (fila de vistorias do Firestore)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+WorkingDirectory=/opt/obra360
+ExecStart=/opt/obra360/.venv/bin/python worker.py --poll
+Restart=always
+RestartSec=30
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
