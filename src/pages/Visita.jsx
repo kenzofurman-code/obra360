@@ -69,6 +69,7 @@ export default function Visita() {
   // no .env do frontend (Vercel) apontando pra ela, ex.: http://<ip-vps>:8090 -
   // sem isso, o modo medição fica visível mas retorna erro claro ao clicar.
   const apiMedicaoUrl = import.meta.env.VITE_API_MEDICAO_URL || null
+  const apiMedicaoKey = import.meta.env.VITE_MEDICAO_API_KEY || null
   // Altura/largura da pagina do PDF da planta (salvo pelo worker.py via pdf_extractor.
   // get_page_aspect) - sem isso a rotacao/escala distorce a trajetoria em paginas
   // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
@@ -732,6 +733,7 @@ export default function Visita() {
               modoCalibrar={modoCalibrar}
               mapaUrl={visita.mapa_url || null}
               apiMedicaoUrl={apiMedicaoUrl}
+              apiMedicaoKey={apiMedicaoKey}
               escalaSlamMetros={visita.escala_slam_metros || null}
               larguraCalibracaoM={parseFloat(larguraCalibracaoInput.replace(',', '.')) || null}
               onResultadoMedicao={onResultadoMedicao}

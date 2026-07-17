@@ -1,0 +1,9 @@
+# Dependencias SO da api_medicao.py (nao do pipeline inteiro) - usado pelo
+# Dockerfile.api_medicao no deploy via Coolify (ver CLAUDE.md, item 18/21).
+flask
+flask-cors
+requests
+msgpack
+numpy
+scipy
+gunicorn

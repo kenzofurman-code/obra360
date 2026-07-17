@@ -1,0 +1,20 @@
+# Dockerfile da API de medicao (api_medicao.py) pro deploy via Coolify na VPS
+# (Contabo, ver obra360_hosting_decision). So a API - o worker.py NAO roda
+# aqui (precisa do Docker do stella_vslam no host; deploy separado, depois).
+#
+# Notas:
+# - gunicorn com 1 worker + threads: o cache de landmarks (_cache_landmarks)
+#   e' em memoria por processo - mais workers multiplicariam o RAM do mapa
+#   (112MB+ por vistoria carregada).
+# - timeout 300s: a PRIMEIRA medicao de cada vistoria baixa o mapa.msg
+#   inteiro do R2 (100MB+) antes de responder - as seguintes usam o cache.
+# - /app/cache_mapas deve ser montado como volume persistente no Coolify
+#   (senao o cache se perde a cada redeploy e rebaixa 100MB+ por vistoria).
+FROM python:3.11-slim
+WORKDIR /app
+COPY requirements_api.txt .
+RUN pip install --no-cache-dir -r requirements_api.txt
+COPY medir_panorama.py api_medicao.py ./
+ENV PYTHONUNBUFFERED=1
+EXPOSE 8090
+CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "1", "--threads", "4", "--timeout", "300", "api_medicao:app"]

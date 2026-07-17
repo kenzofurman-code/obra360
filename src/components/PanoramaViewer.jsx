@@ -124,7 +124,8 @@ export default function PanoramaViewer({
   modoMedicao = false, // true = clique na foto marca pontos de medição em vez de nada
   modoCalibrar = false, // true = os 2 próximos pontos calibram a escala (precisa larguraCalibracaoM), em vez de medir direto
   mapaUrl = null, // visita.mapa_url (mapa.msg no R2) - sem isso, medição fica indisponível
-  apiMedicaoUrl = null, // base da API (ver api_medicao.py) - ex.: http://vps:8090
+  apiMedicaoUrl = null, // base da API (ver api_medicao.py) - ex.: https://api.obra360.exemplo
+  apiMedicaoKey = null, // valor de MEDICAO_API_KEY da API (header X-Api-Key); null = sem auth
   escalaSlamMetros = null, // visita.escala_slam_metros, se já calibrada (senão /medir devolve só unid. SLAM)
   larguraCalibracaoM = null, // largura real (m) do vão usado pra calibrar, quando modoCalibrar=true
   onResultadoMedicao, // (resultado, { calibrando }) => void - chamado com a resposta da API
@@ -147,6 +148,7 @@ export default function PanoramaViewer({
   const modoCalibrarRef = useRef(modoCalibrar)
   const mapaUrlRef = useRef(mapaUrl)
   const apiMedicaoUrlRef = useRef(apiMedicaoUrl)
+  const apiMedicaoKeyRef = useRef(apiMedicaoKey)
   const escalaSlamMetrosRef = useRef(escalaSlamMetros)
   const larguraCalibracaoMRef = useRef(larguraCalibracaoM)
   const onResultadoMedicaoRef = useRef(onResultadoMedicao)
@@ -163,6 +165,7 @@ export default function PanoramaViewer({
   useEffect(() => { ribbonRotationRef.current = ribbonRotationOffset }, [ribbonRotationOffset])
   useEffect(() => { mapaUrlRef.current = mapaUrl }, [mapaUrl])
   useEffect(() => { apiMedicaoUrlRef.current = apiMedicaoUrl }, [apiMedicaoUrl])
+  useEffect(() => { apiMedicaoKeyRef.current = apiMedicaoKey }, [apiMedicaoKey])
   useEffect(() => { escalaSlamMetrosRef.current = escalaSlamMetros }, [escalaSlamMetros])
   useEffect(() => { larguraCalibracaoMRef.current = larguraCalibracaoM }, [larguraCalibracaoM])
   useEffect(() => { onResultadoMedicaoRef.current = onResultadoMedicao }, [onResultadoMedicao])
@@ -552,9 +555,11 @@ export default function PanoramaViewer({
         corpo.escala_slam_metros = escalaSlamMetrosRef.current
       }
 
+      const headers = { 'Content-Type': 'application/json' }
+      if (apiMedicaoKeyRef.current) headers['X-Api-Key'] = apiMedicaoKeyRef.current
       fetch(`${apiUrl}/${calibrando ? 'calibrar' : 'medir'}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify(corpo),
       })
         .then((r) => r.json())
