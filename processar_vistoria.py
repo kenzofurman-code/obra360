@@ -152,6 +152,158 @@ def detectar_cruzamentos_vaos(pontos_fisicos: list, vaos_fisico: list) -> list:
     return cruzamentos
 
 
+def _bbox_diag(P):
+    P = np.asarray(P, dtype=float)
+    return float(np.hypot(*(P.max(0) - P.min(0)))) if len(P) else 0.0
+
+
+def _centros_vaos(vaos_fis: list) -> np.ndarray:
+    """Um ponto representativo por vao (centro da abertura, espaco FISICO) -
+    usado so' pela busca global grosseira (proximidade). O casamento fino
+    continua usando a geometria de arco completa (detectar_cruzamentos_vaos)."""
+    centros = []
+    for v in vaos_fis:
+        h = np.array(v['hinge'], dtype=float)
+        exts = [np.array(e, dtype=float) for e in v['extremos']]
+        centros.append((h + np.mean(exts, axis=0)) / 2.0 if exts else h)
+    return np.array(centros)
+
+
+def _rot_mirror_raw(R: np.ndarray, heading_deg: float, espelhar: bool) -> np.ndarray:
+    """Aplica MESMA convencao de alinhar_ponto/_rot_fixo (theta=heading+180,
+    espelha x, y sempre negado) a toda a trajetoria bruta - SEM escala nem
+    translacao (essas entram depois na busca)."""
+    th = math.radians(heading_deg + 180)
+    c, s = math.cos(th), math.sin(th)
+    dx = (-R[:, 0] if espelhar else R[:, 0])
+    dy = -R[:, 1]
+    return np.column_stack([dx * c - dy * s, dx * s + dy * c])
+
+
+def _score_proximidade(P: np.ndarray, centros: np.ndarray, thr: float, icp: int = 4):
+    """Quantas portas ficam a menos de `thr` do ponto de trajetoria mais
+    proximo, otimizando SO a translacao por ICP (heading/escala ja aplicados
+    em P). Retorna (n_casadas, residual_medio, translacao)."""
+    t = centros.mean(0) - P.mean(0)  # seed por centroide
+    matched, resid = 0, 1e9
+    for _ in range(icp):
+        A = P + t
+        dist = np.sqrt(((centros[:, None, :] - A[None, :, :]) ** 2).sum(-1))
+        dmin = dist.min(1)
+        jmin = dist.argmin(1)
+        m = dmin < thr
+        if int(m.sum()) < 3:
+            break
+        t = t + (centros[m] - A[jmin[m]]).mean(0)  # so translacao, portas casadas
+        matched, resid = int(m.sum()), float(dmin[m].mean())
+    return matched, resid, t
+
+
+def calibrar_auto_por_portas(raw_waypoints: list, vaos: list, aspecto: float = 1.0,
+                             min_portas: int = 6, thr_frac: float = 0.045):
+    """
+    Calibracao AUTOMATICA sem chute (roadmap 4.3 - "zero-clique"). Ideia do
+    Pedro (2026-07-18): em vez de refinar a partir de um heading/escala
+    configurado na mao, faz uma BUSCA GLOBAL de (heading, escala, espelhar)
+    contra as portas do PDF e acha a combinacao que melhor encaixa.
+
+    Por que existe, alem de calibrar_por_portas: aquela funcao e' um
+    REFINAMENTO - depende de detectar_cruzamentos_vaos, que exige a trajetoria
+    JA cruzando geometricamente os arcos das portas. Se o heading do chute
+    estiver errado (ex.: a vistoria de 2026-07-17 precisou de heading bem
+    diferente do default 90), nenhum cruzamento e' detectado e ela desiste,
+    forcando o inspetor a acertar heading/escala na mao antes. Esta funcao
+    remove esse passo manual: nao assume heading nenhum, varre 0-360.
+
+    Estrategia (validada em dados reais - VID_021 recupera heading=90/
+    escala=0.46/espelhar=True do zero, batendo o gabarito humano a 2.7%):
+      1. Busca grosseira: heading (passo 6 graus) x escala (faixa centrada na
+         razao de bounding-box trajetoria/portas) x espelhar, pontuada por
+         PROXIMIDADE das portas (quantas casam < thr), translacao por ICP.
+      2. Pega os melhores "basins" distintos (headings separados).
+      3. Refino local de heading/escala (passo 1 grau) em cada basin.
+      4. DESEMPATE por cruzamento GEOMETRICO real (detectar_cruzamentos_vaos):
+         a proximidade de centros sozinha tem ambiguidade de espelho (um
+         predio simetrico casa quase igual no reflexo) - a passagem real pelo
+         arco da porta e' direcional e desfaz o empate. Vence quem tem MAIS
+         cruzamentos reais (desempate: menor residual).
+
+    Retorna (ancora1, heading, path_scale, espelhar, info) no MESMO formato de
+    calibrar_por_portas, ou None se nao houver portas suficientes pra busca
+    global (chamador cai no fluxo antigo). NAO aplica o gate final de holdout -
+    isso fica com calibrar_por_portas, que o chamador roda em seguida usando
+    este resultado como chute (agora um chute BOM, no basin certo).
+    """
+    vaos_fis = vaos_em_fisico(vaos, aspecto)
+    centros = _centros_vaos(vaos_fis)
+    if len(centros) < min_portas:
+        return None
+
+    R = np.array([[w['x'], w['y']] for w in raw_waypoints], dtype=float)
+    if len(R) < 3:
+        return None
+
+    thr = thr_frac * _bbox_diag(centros)
+    sc0 = _bbox_diag(centros) / max(_bbox_diag(R), 1e-9)
+    escalas = np.linspace(0.35 * sc0, 2.2 * sc0, 28)
+
+    # 1. busca grosseira
+    cands = []
+    for esp in (False, True):
+        bases = {h: _rot_mirror_raw(R, h, esp) for h in range(0, 360, 6)}
+        for h, base in bases.items():
+            for sc in escalas:
+                m, resid, t = _score_proximidade(base * sc, centros, thr)
+                if m >= 3:
+                    cands.append((m, -resid, float(h), float(sc), esp, tuple(t)))
+    if not cands:
+        return None
+    cands.sort(key=lambda z: z[:2], reverse=True)
+
+    # 2. basins distintos (heading separado por >15 graus dentro do mesmo espelhar)
+    top = []
+    for c in cands:
+        dist_basin = lambda p: abs(((c[2] - p[2] + 180) % 360) - 180) < 15 and c[4] == p[4]
+        if not any(dist_basin(p) for p in top):
+            top.append(c)
+        if len(top) >= 5:
+            break
+
+    ts = np.array([w['t'] for w in raw_waypoints], dtype=float)
+
+    def _pontos_fis(h, esp, sc, t):
+        P = _rot_mirror_raw(R, h, esp) * sc + np.array(t)
+        return [{'t': float(ts[k]), 'x': float(P[k, 0]), 'y': float(P[k, 1])}
+                for k in range(len(P))]
+
+    # 3+4. refino local + desempate por cruzamento real
+    melhor = None
+    for c in top:
+        best_local = c
+        for h in np.arange(c[2] - 6, c[2] + 6.01, 1.0):
+            base = _rot_mirror_raw(R, h, c[4])
+            for sc in np.linspace(c[3] * 0.85, c[3] * 1.15, 9):
+                m, resid, t = _score_proximidade(base * sc, centros, thr)
+                if (m, -resid) > best_local[:2]:
+                    best_local = (m, -resid, float(h), float(sc), c[4], tuple(t))
+        m2, negr2, h2, sc2, esp2, t2 = best_local
+        cruz = detectar_cruzamentos_vaos(_pontos_fis(h2, esp2, sc2, t2), vaos_fis)
+        resid_cruz = float(np.median([cc['dist'] for cc in cruz])) if cruz else 1e9
+        chave = (len(cruz), m2, -resid_cruz)
+        if melhor is None or chave > melhor['chave']:
+            melhor = dict(chave=chave, heading=h2, escala=sc2, espelhar=esp2,
+                          tx=t2[0], ty=t2[1], n_cruz=len(cruz),
+                          n_prox=m2, resid_prox=-negr2)
+
+    if melhor is None or melhor['n_cruz'] < min_portas:
+        return None
+
+    ancora1 = {'x': float(melhor['tx']), 'y': float(melhor['ty']) / aspecto}
+    info = {'origem': 'busca_global', 'n_cruz': melhor['n_cruz'],
+            'n_prox': melhor['n_prox'], 'resid_prox': round(melhor['resid_prox'], 4)}
+    return ancora1, float(melhor['heading']), float(melhor['escala']), bool(melhor['espelhar']), info
+
+
 def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
                         heading_offset: float, path_scale: float, espelhar: bool,
                         aspecto: float = 1.0, min_portas: int = 4) -> tuple:
@@ -472,7 +624,23 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     mesmo) deve gravar esses valores de volta no Firestore, ja' que o site usa
     os MESMOS campos pra re-alinhar a trajetoria na tela.
     """
-    print(f"\n[Pipeline] Calibrando escala/ancora automaticamente por multiplas portas "
+    # Calibracao AUTOMATICA global primeiro (roadmap 4.3 "zero-clique", ideia do
+    # Pedro 2026-07-18): busca heading+escala+espelhar do zero contra as portas,
+    # sem depender do chute manual estar perto. Se achar um alinhamento com
+    # portas suficientes (cruzamentos reais), usa como chute do refino; senao
+    # mantem o heading/escala manuais (comportamento antigo).
+    auto = calibrar_auto_por_portas(raw_waypoints, vaos, aspecto)
+    if auto is not None:
+        a_anc, a_head, a_scale, a_esp, a_info = auto
+        print(f"\n[Pipeline] Calibracao AUTOMATICA GLOBAL (sem chute manual): "
+              f"heading={a_head:.0f} escala={a_scale:.4f} espelhar={a_esp} "
+              f"({a_info['n_cruz']} portas cruzadas de verdade) - adotando como chute.")
+        ancora1, heading_offset, path_scale, espelhar = a_anc, a_head, a_scale, a_esp
+    else:
+        print(f"\n[Pipeline] Busca global nao achou portas suficientes - "
+              "usando heading/escala manuais como chute.")
+
+    print(f"\n[Pipeline] Refinando escala/ancora por multiplas portas "
           f"(heading/espelhar fixos)...")
     ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
         raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)

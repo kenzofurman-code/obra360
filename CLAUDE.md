@@ -753,6 +753,44 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       contra moto: 1204 objetos paginados + vídeo removidos, vistoria
       vizinha intacta, ids inválidos rejeitados (400).
 
+23. **Calibração automática "zero-clique" por busca global de portas
+    (2026-07-18, roadmap Fase 4.3 - "a maior barreira de uso hoje").** Ideia do
+    Pedro: em vez de refinar a partir de um heading/escala configurado na mão,
+    BUSCAR heading+escala+espelhar do zero contra as portas do PDF. Motivou-se
+    porque a última vistoria (2026-07-17) precisou de heading manual bem
+    diferente do default 90 - a premissa do item 10 ("heading é constante da
+    câmera") não vale sempre; heading varia por vídeo e precisa entrar na busca.
+    - Por que a `calibrar_por_portas` existente não bastava: ela é um
+      REFINAMENTO que depende de `detectar_cruzamentos_vaos`, que exige a
+      trajetória JÁ cruzando os arcos das portas. Heading errado no chute →
+      zero cruzamentos → desiste → força calibração manual. Chicken-and-egg.
+    - **Nova `calibrar_auto_por_portas()` em `processar_vistoria.py`**: (1)
+      busca grosseira heading (passo 6°) × escala (faixa centrada na razão de
+      bbox trajetória/portas) × espelhar, pontuada por PROXIMIDADE dos centros
+      de porta (quantas casam < ~4.5%), translação por ICP; (2) pega os basins
+      distintos; (3) refino local de heading/escala (passo 1°); (4) DESEMPATE
+      por cruzamento GEOMÉTRICO real (a proximidade de centros sozinha tem
+      ambiguidade de espelho num prédio simétrico - a passagem direcional pelo
+      arco desfaz). Entrega o resultado como CHUTE pra `calibrar_por_portas`,
+      que refina escala+âncora e aplica o gate de holdout já existente
+      (heading/espelhar ficam fixos no que a busca achou). `run_map_matching`
+      chama a auto primeiro; se achar portas suficientes, adota; senão cai no
+      manual (comportamento antigo, sem regressão).
+    - **VALIDADO em dados reais** (`VID_021` + 40 portas de `planta_passagens.json`
+      + `gabarito_trajetoria_6_pavimento.json`): a busca grosseira sozinha
+      recupera heading=90/escala=0.46/espelhar=True do zero, batendo o gabarito
+      humano a 2.7%; e o pipeline completo, partindo de um chute
+      PROPOSITALMENTE ERRADO (heading=0, escala=0.1), conserta sozinho pra
+      heading≈76/escala≈0.46/espelhar=True com a trajetória final a 2.74% do
+      gabarito (vs 2.67% da calibração manual "certa") - 17-20 portas cruzando
+      a 0.1-2.4% cada. **Ressalva honesta**: `planta_passagens.json` só tem
+      CENTROS de porta; a geometria de arco (hinge/extremos) usada no desempate
+      foi SINTETIZADA a partir do gabarito pra este teste. A busca grosseira
+      está provada em dados 100% reais; o desempate por cruzamento roda sobre
+      arcos plausíveis mas sintéticos - **falta um run real do worker.py com os
+      arcos de verdade do `extrair_portas.py`** pra fechar 100%. Primeira coisa
+      a confirmar no próximo processamento.
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
