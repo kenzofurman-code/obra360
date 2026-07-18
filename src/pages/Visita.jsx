@@ -6,7 +6,7 @@ import PanoramaViewer from '../components/PanoramaViewer'
 import PlantaViewer from '../components/PlantaViewer'
 import WaypointEditor from '../components/WaypointEditor'
 import { useVideoSync } from '../hooks/useVideoSync'
-import { getVisita, atualizarVisita, listarVisitas, listarVisitasDoLocal } from '../lib/visitas'
+import { getVisita, atualizarVisita, listarVisitas, listarVisitasDoLocal, excluirVisitaCompleta, deletarVisita } from '../lib/visitas'
 
 export default function Visita() {
   const { id } = useParams()
@@ -70,6 +70,30 @@ export default function Visita() {
   // sem isso, o modo medição fica visível mas retorna erro claro ao clicar.
   const apiMedicaoUrl = import.meta.env.VITE_API_MEDICAO_URL || null
   const apiMedicaoKey = import.meta.env.VITE_MEDICAO_API_KEY || null
+  // Exclusao da vistoria (2026-07-18): botao no header abre modal que lista o
+  // que sera apagado (registro + fotos/mapa/video no R2) e chama
+  // excluirVisitaCompleta (limpa storage via API, depois deleta o doc).
+  const [modalExcluir, setModalExcluir] = useState(false)
+  const [excluindoBusy, setExcluindoBusy] = useState(false)
+  const [excluirErro, setExcluirErro] = useState('')
+
+  async function confirmarExclusao(soRegistro = false) {
+    if (!visita) return
+    setExcluindoBusy(true)
+    setExcluirErro('')
+    try {
+      if (soRegistro) {
+        await deletarVisita(visita.id)
+      } else {
+        await excluirVisitaCompleta(visita, { apiUrl: apiMedicaoUrl, apiKey: apiMedicaoKey })
+      }
+      navigate('/')
+    } catch (err) {
+      setExcluirErro(err.message || String(err))
+    } finally {
+      setExcluindoBusy(false)
+    }
+  }
   // Altura/largura da pagina do PDF da planta (salvo pelo worker.py via pdf_extractor.
   // get_page_aspect) - sem isso a rotacao/escala distorce a trajetoria em paginas
   // nao-quadradas (achata um eixo, alarga o outro). Ver mesma nota em alinhar_ponto
@@ -703,8 +727,68 @@ export default function Visita() {
           }`}>
             {visita.status === 'ready' ? 'ativo' : 'processando'}
           </span>
+          <button
+            onClick={() => { setExcluirErro(''); setModalExcluir(true) }}
+            className="text-alerta/70 hover:text-alerta text-xs transition-colors px-2 py-1.5 rounded bg-concreto-800/40 hover:bg-alerta/15 flex items-center gap-1.5 font-mono"
+            title="Excluir esta vistoria (registro + arquivos no armazenamento)"
+          >
+            🗑 Excluir
+          </button>
         </div>
       </header>
+
+      {modalExcluir && (
+        <div
+          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4"
+          onClick={() => !excluindoBusy && setModalExcluir(false)}
+        >
+          <div
+            className="bg-concreto-900 border border-concreto-700 rounded-xl max-w-md w-full p-5 shadow-2xl"
+            onClick={e => e.stopPropagation()}
+          >
+            <h3 className="text-alerta font-semibold text-sm font-mono mb-1">Excluir vistoria</h3>
+            <p className="text-aco-200 text-sm mb-3">
+              <span className="font-semibold">{visita.pavimento || 'Sem nome'}</span>
+            </p>
+            <div className="bg-concreto-800/60 border border-concreto-700/60 rounded-lg p-3 mb-3">
+              <p className="text-aco-300 text-xs leading-relaxed">Isto apaga <span className="text-alerta font-semibold">permanentemente</span>:</p>
+              <ul className="text-aco-400 text-[11px] font-mono mt-1.5 space-y-0.5">
+                <li>• o registro da vistoria (trajetoria, calibracao, ambientes)</li>
+                <li>• as fotos 360, miniaturas e o mapa 3D no armazenamento</li>
+                {visita.video_r2_key && <li>• o video bruto enviado</li>}
+              </ul>
+            </div>
+            {excluirErro && (
+              <div className="bg-alerta/10 border border-alerta/40 rounded-lg p-3 mb-3">
+                <p className="text-alerta text-xs leading-relaxed">{excluirErro}</p>
+                <button
+                  onClick={() => confirmarExclusao(true)}
+                  disabled={excluindoBusy}
+                  className="mt-2 text-[11px] font-mono underline text-aco-300 hover:text-aco-100 disabled:opacity-50"
+                >
+                  Excluir so o registro (deixa os arquivos no armazenamento)
+                </button>
+              </div>
+            )}
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setModalExcluir(false)}
+                disabled={excluindoBusy}
+                className="px-4 py-2 text-xs font-mono rounded-lg border border-concreto-700 text-aco-300 hover:bg-concreto-800 disabled:opacity-50 transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={() => confirmarExclusao(false)}
+                disabled={excluindoBusy}
+                className="px-4 py-2 text-xs font-mono rounded-lg bg-alerta/85 hover:bg-alerta text-white disabled:opacity-50 transition-colors"
+              >
+                {excluindoBusy ? 'Excluindo...' : 'Excluir definitivamente'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Main View Area */}
       <main className="flex-1 w-full relative min-h-0 overflow-hidden z-10">
