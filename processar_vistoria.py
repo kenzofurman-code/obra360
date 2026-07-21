@@ -278,6 +278,7 @@ def calibrar_auto_por_portas(raw_waypoints: list, vaos: list, aspecto: float = 1
 
     # 3+4. refino local + desempate por cruzamento real
     melhor = None
+    candidatos_finais = []
     for c in top:
         best_local = c
         for h in np.arange(c[2] - 6, c[2] + 6.01, 1.0):
@@ -290,6 +291,7 @@ def calibrar_auto_por_portas(raw_waypoints: list, vaos: list, aspecto: float = 1
         cruz = detectar_cruzamentos_vaos(_pontos_fis(h2, esp2, sc2, t2), vaos_fis)
         resid_cruz = float(np.median([cc['dist'] for cc in cruz])) if cruz else 1e9
         chave = (len(cruz), m2, -resid_cruz)
+        candidatos_finais.append((h2, esp2, len(cruz)))
         if melhor is None or chave > melhor['chave']:
             melhor = dict(chave=chave, heading=h2, escala=sc2, espelhar=esp2,
                           tx=t2[0], ty=t2[1], n_cruz=len(cruz),
@@ -297,6 +299,30 @@ def calibrar_auto_por_portas(raw_waypoints: list, vaos: list, aspecto: float = 1
 
     if melhor is None or melhor['n_cruz'] < min_portas:
         return None
+
+    # GATE DE AMBIGUIDADE (2026-07-21, achado do Pedro numa vistoria real com
+    # deriva de SLAM): numa trajetoria ENTORTADA pela deriva, nao existe um
+    # heading unico correto - varios headings BEM DIFERENTES cruzam quantidades
+    # parecidas de portas (confirmado: 0/40/140/240 cruzando 20-24 cada). Nesse
+    # caso a busca "vence" num heading errado com aparencia de confianca
+    # (residual baixo, muitas portas) e ATROPELA o heading manual certo. Se ha
+    # mais de um basin distinto (>30 graus) com >=70% dos cruzamentos do melhor,
+    # a calibracao e' AMBIGUA -> devolve None pra manter o manual do usuario, em
+    # vez de adotar um palpite errado com falsa confianca. Causa raiz e' a
+    # deriva do SLAM (trajetoria limpa trava o heading de forma unica); enquanto
+    # isso, e' mais seguro nao sobrescrever o manual do que confiar cegamente.
+    melhor_ncruz = melhor['n_cruz']
+    concorrentes = []
+    for h_c, esp_c, n_c in candidatos_finais:
+        if n_c >= 0.7 * melhor_ncruz and all(
+                abs(((h_c - hj + 180) % 360) - 180) > 30 for hj, _ in concorrentes):
+            concorrentes.append((h_c, esp_c))
+    if len(concorrentes) >= 2:
+        return {'ambiguo': True,
+                'motivo': f'{len(concorrentes)} headings distintos empatam '
+                          f'({[round(h) for h, _ in concorrentes]}) - trajetoria '
+                          'provavelmente com deriva; mantendo calibracao manual',
+                'headings_empatados': [round(h) for h, _ in concorrentes]}
 
     ancora1 = {'x': float(melhor['tx']), 'y': float(melhor['ty']) / aspecto}
     info = {'origem': 'busca_global', 'n_cruz': melhor['n_cruz'],
@@ -630,7 +656,19 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     # portas suficientes (cruzamentos reais), usa como chute do refino; senao
     # mantem o heading/escala manuais (comportamento antigo).
     auto = calibrar_auto_por_portas(raw_waypoints, vaos, aspecto)
-    if auto is not None:
+    pular_refino = False
+    if isinstance(auto, dict) and auto.get('ambiguo'):
+        # Gate de ambiguidade (achado do Pedro 2026-07-21): varios headings
+        # empatam -> quase sempre deriva de SLAM. NAO sobrescreve o manual E
+        # pula o refino (que tambem moveria a ancora com a mesma cegueira de
+        # rotacao) - o manual do usuario fica INTACTO.
+        print(f"\n[Pipeline] *** Calibracao automatica INCONCLUSIVA ***: "
+              f"{auto['motivo']}.")
+        print(f"    >>> MANTENDO o heading/escala/ancora MANUAIS INTACTOS "
+              f"(heading={heading_offset}, escala={path_scale}, espelhar={espelhar}). "
+              "VERIFIQUE o alinhamento no site - a trajetoria pode estar com deriva.")
+        pular_refino = True
+    elif auto is not None:
         a_anc, a_head, a_scale, a_esp, a_info = auto
         print(f"\n[Pipeline] Calibracao AUTOMATICA GLOBAL (sem chute manual): "
               f"heading={a_head:.0f} escala={a_scale:.4f} espelhar={a_esp} "
@@ -640,16 +678,20 @@ def run_map_matching(raw_waypoints: list, vaos: list,
         print(f"\n[Pipeline] Busca global nao achou portas suficientes - "
               "usando heading/escala manuais como chute.")
 
-    print(f"\n[Pipeline] Refinando escala/ancora por multiplas portas "
-          f"(heading/espelhar fixos)...")
-    ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
-        raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
-    if calib_info.get('usado_auto'):
-        print(f"  [OK] Calibracao automatica adotada: {calib_info['n_portas']} portas, "
-              f"residual de validacao={calib_info['residual_val']:.4f}")
+    if pular_refino:
+        print(f"\n[Pipeline] Refino por portas PULADO (calibracao ambigua) - "
+              "manual preservado sem tocar na ancora.")
     else:
-        print(f"  [AVISO] Calibracao automatica NAO adotada ({calib_info.get('motivo')}) "
-              "- usando ancora/heading/escala manuais como estavam.")
+        print(f"\n[Pipeline] Refinando escala/ancora por multiplas portas "
+              f"(heading/espelhar fixos)...")
+        ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
+            raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
+        if calib_info.get('usado_auto'):
+            print(f"  [OK] Calibracao automatica adotada: {calib_info['n_portas']} portas, "
+                  f"residual de validacao={calib_info['residual_val']:.4f}")
+        else:
+            print(f"  [AVISO] Calibracao automatica NAO adotada ({calib_info.get('motivo')}) "
+                  "- usando ancora/heading/escala manuais como estavam.")
 
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")

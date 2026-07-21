@@ -791,6 +791,40 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       arcos de verdade do `extrair_portas.py`** pra fechar 100%. Primeira coisa
       a confirmar no próximo processamento.
 
+24. **A métrica de resíduo da calibração automática NÃO distingue heading
+    certo de errado (achado do Pedro, 2026-07-21, primeira vistoria real
+    processada 100%% pela VPS).** A auto-calibração adotou um heading errado
+    reportando "28 portas, resíduo 0.44%%" com falsa confiança, atropelando a
+    âncora manual do Pedro (que mudou de lugar sozinha - a impressão digital do
+    problema). **Reproduzido nos dados reais** (`frame_trajectory.txt` +
+    `vaos.json` desse run, trajetória crua derivada via `tum_para_raw_waypoints`):
+    - O heading CORRETO do Pedro (137.1) dá resíduo 0.0072/7 portas; headings
+      ERRADOS pontuam MELHOR (90→0.0009/6, 160→0.0048/9). Otimizar por
+      resíduo/nº-de-portas necessariamente escolhe errado.
+    - Causa: depois de fixar o heading, o código ajusta escala+translação
+      LIVRES, que ABSORVEM o erro de rotação - pior ainda com portas
+      quase-colineares (corredores). A âncora "andar sozinha" é a translação
+      compensando a rotação errada.
+    - Camada mais profunda: a trajetória está ENTORTADA pela deriva do SLAM
+      (só 7 de 43 portas cruzam no heading certo). ICP de rotação LIVRE
+      (Umeyama completo) também não acha um heading único - converge pra
+      headings bem diferentes (42/139/167...) dependendo do start, vários
+      casando as 43 portas. **Numa trajetória com deriva NÃO existe heading
+      rígido único correto** - o humano escolhe reconhecendo a forma global do
+      prédio, o que métrica de porta local não captura. Nenhuma métrica melhor
+      sozinha conserta; a raiz é a qualidade do SLAM.
+    - **FIX implementado (commit desta sessão): gate de ambiguidade em
+      `calibrar_auto_por_portas`.** Varre o heading contando cruzamentos
+      geométricos reais; se ≥2 headings DISTINTOS (>30°) chegam a ≥70%% do
+      melhor, devolve `{ambiguo:True}` em vez de adotar. `run_map_matching`
+      então MANTÉM o manual do usuário INTACTO (pula até o refino, que também
+      moveria a âncora) e imprime aviso pra verificar no site. **Validado nos
+      dados reais**: flagra este caso (headings empatados [144,40,254]) e não
+      adota. NÃO acha o heading certo (isso exige trajetória limpa) - só para
+      de sobrescrever o manual com lixo confiante. **Pendência**: validar que
+      o gate NÃO rejeita casos limpos (sem vistoria limpa com geometria de arco
+      em mãos pra testar - o `planta_passagens.json` só tinha centros).
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita

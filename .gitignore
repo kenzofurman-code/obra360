@@ -16,3 +16,6 @@ __pycache__/
 *.pyc
 tmp_slam_*/
 
+vaos.json
+trajetoria_bruta.json
+frame_trajectory_vps.txt
