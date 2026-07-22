@@ -422,6 +422,8 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
                  'ancora1': calibracao['ancora1'],
                  'heading_offset': calibracao['heading_offset'],
                  'path_scale': calibracao['path_scale'],
+                 'escala_x': calibracao.get('escala_x', 1.0),
+                 'escala_y': calibracao.get('escala_y', 1.0),
                  'espelhar_caminho': calibracao['espelhar_caminho'],
                  'ambientes': ambientes,
                  # Selo de qualidade (ver mesmo campo em processar_vistoria.py) -

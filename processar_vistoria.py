@@ -28,7 +28,8 @@ STORAGE_BUCKET = 'obras360-c474d.firebasestorage.app'
 # ─── Helpers ────────────────────────────────────────────────────────────────
 
 def alinhar_ponto(wp_x: float, wp_y: float, ancora1: dict, heading_offset: float,
-                  path_scale: float, espelhar: bool, aspecto: float = 1.0) -> tuple:
+                  path_scale: float, espelhar: bool, aspecto: float = 1.0,
+                  escala_x: float = 1.0, escala_y: float = 1.0) -> tuple:
     """
     Converte coordenadas brutas da odometria (espaço do vídeo) para coordenadas
     normalizadas da planta (0-1), usando a MESMA transformacão que o site React.
@@ -41,6 +42,12 @@ def alinhar_ponto(wp_x: float, wp_y: float, ancora1: dict, heading_offset: float
     trajetória (achata um eixo, alarga o outro). A rotação/escala acontece em
     espaço físico (isotrópico, "unidades de largura"); só a saída em y é
     dividida por aspecto pra voltar ao normalizado.
+
+    escala_x/escala_y (2026-07-22): multiplicadores INDEPENDENTES por eixo, em
+    torno da âncora A (default 1.0 = sem efeito). Corrigem esticão residual de
+    proporção que o path_scale isotrópico + aspecto não pegam (ajustados
+    automaticamente por ajustar_escala_eixos() contra as portas, e/ou na mão
+    pelos sliders escala_x/escala_y do site). Mesmos campos no Visita.jsx.
     """
     dx = -wp_x if espelhar else wp_x
     dy = -wp_y
@@ -48,19 +55,20 @@ def alinhar_ponto(wp_x: float, wp_y: float, ancora1: dict, heading_offset: float
     rx = dx * math.cos(theta) - dy * math.sin(theta)
     ry = dx * math.sin(theta) + dy * math.cos(theta)
     return (
-        ancora1['x'] + rx * path_scale,
-        ancora1['y'] + (ry * path_scale) / aspecto
+        ancora1['x'] + rx * path_scale * escala_x,
+        ancora1['y'] + (ry * path_scale * escala_y) / aspecto
     )
 
 
 def desalinhar_ponto(px: float, py: float, ancora1: dict, heading_offset: float,
-                     path_scale: float, espelhar: bool, aspecto: float = 1.0) -> tuple:
+                     path_scale: float, espelhar: bool, aspecto: float = 1.0,
+                     escala_x: float = 1.0, escala_y: float = 1.0) -> tuple:
     """
     Inverso de alinhar_ponto: converte coordenadas da planta (0-1) de volta
     para coordenadas brutas da odometria. Ver nota de aspecto em alinhar_ponto.
     """
-    rx = (px - ancora1['x']) / path_scale
-    ry = ((py - ancora1['y']) * aspecto) / path_scale
+    rx = (px - ancora1['x']) / (path_scale * escala_x)
+    ry = ((py - ancora1['y']) * aspecto) / (path_scale * escala_y)
     theta = math.radians(heading_offset + 180)
     # Rotacão inversa (transposta de R)
     dx = rx * math.cos(theta) + ry * math.sin(theta)
@@ -702,6 +710,67 @@ def buscar_heading_por_portas(raw_waypoints, vaos, ancora_manual, path_scale, es
     return melhor
 
 
+def ajustar_escala_eixos(raw_waypoints: list, vaos: list, ancora1: dict,
+                         heading_offset: float, path_scale: float, espelhar: bool,
+                         aspecto: float = 1.0, min_portas: int = 4,
+                         limite: tuple = (0.5, 2.0)) -> tuple:
+    """
+    Ajuste fino ANISOTRÓPICO (2026-07-22, pedido do Pedro): acha multiplicadores
+    INDEPENDENTES de X e Y (escala_x, escala_y) que minimizam o desvio das
+    portas, DEPOIS que heading/espelhar/path_scale/âncora já foram calibrados.
+
+    Modelado como uma escala em torno da ÂNCORA A (que NÃO se move - respeita a
+    trava de âncora): para cada porta cruzada, o vetor (ponto_projetado - A) é
+    esticado por escala_x em x e escala_y em y pra bater no centro da porta.
+    Como heading está fixo, isso é um mínimos quadrados 1D por eixo (fecha em
+    forma fechada, sem iterar):
+
+        escala_x = Σ (dpx·ddx) / Σ (dpx²)      dpx = proj_x - A_x ; ddx = porta_x - A_x
+        escala_y = Σ (dpy·ddy) / Σ (dpy²)      (idem em y, tudo normalizado)
+
+    Por que isotrópico (path_scale sozinho) não bastava: se o aspecto do PDF não
+    bate 100% com a imagem, sobra um esticão num sentido só - o Pedro confirmou
+    isso ajustando o X na mão e vendo "MUITO melhor". Aqui isso vira automático.
+
+    Retorna (escala_x, escala_y). Se houver menos de min_portas cruzamentos,
+    devolve (1.0, 1.0) - sem efeito, superset estrito (não regride nada).
+    limite: clamp de segurança por eixo (evita esticão absurdo por ruído).
+    """
+    aligned, aligned_fis = [], []
+    for wp in raw_waypoints:
+        px, py = alinhar_ponto(wp['x'], wp['y'], ancora1, heading_offset,
+                               path_scale, espelhar, aspecto)
+        aligned.append({'t': wp['t'], 'x': px, 'y': py})
+        aligned_fis.append({'t': wp['t'], 'x': px, 'y': py * aspecto})
+
+    cruz = sorted(detectar_cruzamentos_vaos(aligned_fis, vaos_em_fisico(vaos, aspecto)),
+                  key=lambda c: c['t'])
+    filt = []
+    for c in cruz:
+        if not filt or (c['t'] - filt[-1]['t']) > 4.0:
+            filt.append(c)
+    if len(filt) < min_portas:
+        return 1.0, 1.0
+
+    ax, ay = ancora1['x'], ancora1['y']  # âncora em espaço normalizado
+    numx = denx = numy = deny = 0.0
+    for c in filt:
+        pt = min(aligned, key=lambda p: abs(p['t'] - c['t']))
+        dpx = pt['x'] - ax
+        dpy = pt['y'] - ay
+        ddx = c['centro'][0] - ax
+        ddy = (c['centro'][1] / aspecto) - ay
+        numx += dpx * ddx; denx += dpx * dpx
+        numy += dpy * ddy; deny += dpy * dpy
+
+    ex = numx / denx if denx > 1e-9 else 1.0
+    ey = numy / deny if deny > 1e-9 else 1.0
+    lo, hi = limite
+    ex = min(hi, max(lo, ex))
+    ey = min(hi, max(lo, ey))
+    return float(ex), float(ey)
+
+
 def run_map_matching(raw_waypoints: list, vaos: list,
                      ancora1: dict, heading_offset: float,
                      path_scale: float, espelhar: bool,
@@ -753,6 +822,16 @@ def run_map_matching(raw_waypoints: list, vaos: list,
         print(f"\n[Pipeline] Poucas portas detectadas - usando calibracao manual como esta.")
         calib_info = {'usado_auto': False, 'motivo': 'poucas portas'}
 
+    # Ajuste fino ANISOTROPICO (2026-07-22): depois de heading/escala/ancora,
+    # acha os multiplicadores independentes de X e Y que minimizam o desvio das
+    # portas (escala em torno da ancora fixa - nao a move). Corrige esticao de
+    # proporcao num sentido so' que o path_scale isotropico deixa passar.
+    escala_x, escala_y = ajustar_escala_eixos(raw_waypoints, vaos, ancora1,
+                                              heading_offset, path_scale, espelhar, aspecto)
+    if abs(escala_x - 1.0) > 1e-4 or abs(escala_y - 1.0) > 1e-4:
+        print(f"[Pipeline] Escala por eixo (anisotropica): X={escala_x:.4f} Y={escala_y:.4f} "
+              "(1.0 = sem correcao).")
+
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")
     print(f"  Heading Offset: {heading_offset}°")
@@ -767,7 +846,7 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     aligned_fis = []
     for wp in raw_waypoints:
         px, py = alinhar_ponto(wp['x'], wp['y'], ancora1, heading_offset,
-                               path_scale, espelhar, aspecto)
+                               path_scale, espelhar, aspecto, escala_x, escala_y)
         aligned.append({'t': wp['t'], 'x': px, 'y': py})
         aligned_fis.append({'t': wp['t'], 'x': px, 'y': py * aspecto})
 
@@ -836,7 +915,7 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     corrigida_raw = []
     for pt in corrigida_planta:
         wx, wy = desalinhar_ponto(pt['x'], pt['y'], ancora1, heading_offset,
-                                   path_scale, espelhar, aspecto)
+                                   path_scale, espelhar, aspecto, escala_x, escala_y)
         corrigida_raw.append({
             't': pt['t'],
             'x': round(wx, 5),
@@ -851,6 +930,7 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     calibracao = {
         'ancora1': ancora1, 'heading_offset': heading_offset,
         'path_scale': path_scale, 'espelhar_caminho': espelhar,
+        'escala_x': escala_x, 'escala_y': escala_y,
         'info': calib_info,
     }
     return corrigida_raw, calibracao

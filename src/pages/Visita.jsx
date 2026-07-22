@@ -45,6 +45,7 @@ export default function Visita() {
   // bate 100% com a imagem exibida - ajuste manual pos-calibracao, mesmo
   // espirito de passarela_rotacao/cone_frame_offset. Nao reprocessa nada.
   const [escalaX, setEscalaX] = useState(1.0)
+  const [escalaY, setEscalaY] = useState(1.0)
   const [espelharCaminho, setEspelharCaminho] = useState(true)
   // Segundos a cortar do inicio do video (ex.: tempo parado posicionando a
   // camera antes de andar) - lido pelo worker.py (corte_inicial_seg) antes de
@@ -168,7 +169,7 @@ export default function Visita() {
         return {
           ...pt,
           x: ancora1.x + rx * escalaX,
-          y: ancora1.y + ry / plantaAspecto
+          y: ancora1.y + (ry * escalaY) / plantaAspecto
         }
       }
     }
@@ -188,7 +189,7 @@ export default function Visita() {
       return {
         ...pt,
         x: ancora1.x + rx * pathScale * escalaX,
-        y: ancora1.y + (ry * pathScale) / plantaAspecto
+        y: ancora1.y + (ry * pathScale * escalaY) / plantaAspecto
       }
     }
 
@@ -202,12 +203,12 @@ export default function Visita() {
       return {
         ...pt,
         x: 0.5 + dx * pathScale * escalaX,
-        y: 0.5 + dy * pathScale
+        y: 0.5 + dy * pathScale * escalaY
       }
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, escalaX, espelharCaminho, plantaAspecto])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, escalaX, escalaY, espelharCaminho, plantaAspecto])
 
   // Realiza o inverso do alinhamento: converte coordenadas [0, 1] da planta para a escala/giro bruto do Python
   const desalinharPonto = useCallback((pt) => {
@@ -236,7 +237,7 @@ export default function Visita() {
         const invRotation = -rotation
 
         const dx = (pt.x - ancora1.x) / escalaX
-        const dy = (pt.y - ancora1.y) * plantaAspecto // volta ao espaco fisico
+        const dy = ((pt.y - ancora1.y) / escalaY) * plantaAspecto // volta ao espaco fisico
 
         // Aplica a rotação inversa no vetor de diferença
         const rx = (dx * Math.cos(invRotation) - dy * Math.sin(invRotation)) / scale
@@ -259,7 +260,7 @@ export default function Visita() {
     //    houver âncora A (ver comentário equivalente em alinharPonto acima).
     if (ancora1) {
       const rx = (pt.x - ancora1.x) / pathScale / escalaX
-      const ry = ((pt.y - ancora1.y) * plantaAspecto) / pathScale
+      const ry = ((pt.y - ancora1.y) * plantaAspecto) / pathScale / escalaY
       const theta = ((headingOffset + 180) * Math.PI) / 180
 
       const dx = rx * Math.cos(theta) + ry * Math.sin(theta)
@@ -277,7 +278,7 @@ export default function Visita() {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
       const rx = ((pt.x - 0.5) / pathScale) / escalaX
-      const ry = (pt.y - 0.5) / pathScale
+      const ry = ((pt.y - 0.5) / pathScale) / escalaY
       const finalRx = espelharCaminho ? -rx : rx
       const finalRy = -ry // Desfaz a inversão do eixo Y
       return {
@@ -288,7 +289,7 @@ export default function Visita() {
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, escalaX, espelharCaminho, plantaAspecto])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, escalaX, escalaY, espelharCaminho, plantaAspecto])
 
   const waypointsAlinhados = useMemo(() => {
     return waypoints.map(alinharPonto)
@@ -386,6 +387,7 @@ export default function Visita() {
       setIsImported(v.is_imported || false)
       setPathScale(v.path_scale ?? 0.50)
       setEscalaX(v.escala_x ?? 1.0)
+      setEscalaY(v.escala_y ?? 1.0)
       setEspelharCaminho(v.espelhar_caminho ?? false)
       setCorteInicial(v.corte_inicial_seg ?? 0)
       setRibbonScale(v.passarela_escala ?? 1.0)
@@ -586,6 +588,7 @@ export default function Visita() {
         ancora2,
         path_scale: pathScale,
         escala_x: escalaX,
+        escala_y: escalaY,
         espelhar_caminho: espelharCaminho,
         corte_inicial_seg: corteInicial,
         passarela_escala: ribbonScale,
@@ -1427,6 +1430,40 @@ export default function Visita() {
                   <p className="text-[9px] text-aco-400 leading-normal font-mono">
                     Estica ou comprime só na horizontal. Use quando o trajeto parece
                     achatado/alargado num sentido. 100% = sem alteração.
+                  </p>
+                </div>
+
+                {/* Multiplicador SO' do eixo Y - par do eixo X acima. */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Proporção Vertical (eixo Y)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="20"
+                        max="500"
+                        step="0.5"
+                        value={(escalaY * 100).toFixed(1)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          if (!Number.isNaN(v) && v > 0) setEscalaY(v / 100)
+                        }}
+                        className="w-14 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">%</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="50"
+                    max="200"
+                    step="0.5"
+                    value={escalaY * 100}
+                    onChange={e => setEscalaY(parseFloat(e.target.value) / 100)}
+                    className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                  />
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Estica ou comprime só na vertical. 100% = sem alteração.
                   </p>
                 </div>
 
