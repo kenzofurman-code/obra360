@@ -54,10 +54,13 @@ export function yawMundoDaPose(q) {
   return Math.atan2(fx, fz)               // radianos
 }
 
-// Sinal de convencao do yaw do frame (three.js vs SLAM). Se, ao trocar de
-// foto, a visao/cone girarem pro lado ERRADO, troque pra -1. (Ajuste esperado
-// de 1 rodada no navegador - nao da pra confirmar sem ver.)
-const SINAL_FRAME_YAW = 1
+// Convencao do yaw do frame (three.js vs SLAM), calibrada no navegador
+// 2026-07-22: o SLAM usa eixo vertical invertido -> sinal -1; o offset alinha
+// o frame 0 (inicio da vistoria, onde o drift do SLAM e' ~zero) com a planta.
+// Resíduo remanescente ao longo do tour = deriva do SLAM (nao ha' offset unico
+// perfeito numa trajetoria com drift).
+const SINAL_FRAME_YAW = -1
+const OFFSET_FRAME_YAW_GRAUS = 38.1
 
 class FakePlayer {
   constructor() {
@@ -327,20 +330,13 @@ export default function PanoramaViewer({
       // (2) ajusto lon pela diferenca de yaw entre a foto anterior e a nova, pra
       // a VISAO continuar apontando pra mesma direcao do mundo (sem "pulo").
       const yawNovo = yawMundoDaPose(quadro?.pose_raw?.quat_wc)
-      // AJUSTE AO VIVO (temporario): no console do navegador voce pode testar
-      // convencao sem esperar novo deploy:
-      //   window.__SINAL_FRAME_YAW = -1   (inverte o sentido do giro)
-      //   window.__OFFSET_FRAME_YAW = 90  (rotacao constante do cone, em graus)
-      // Depois de achar os valores que alinham, me passe os dois que eu fixo.
-      const sinal = (typeof window !== 'undefined' && window.__SINAL_FRAME_YAW) || SINAL_FRAME_YAW
-      const offRad = ((typeof window !== 'undefined' && window.__OFFSET_FRAME_YAW) || 0) * Math.PI / 180
-      console.log('[opcao2] frame', indice, 'yaw(graus)=', yawNovo === null ? null : (yawNovo * 180 / Math.PI).toFixed(1), 'sinal=', sinal, 'off=', window.__OFFSET_FRAME_YAW || 0)
+      const offRad = OFFSET_FRAME_YAW_GRAUS * Math.PI / 180
       if (yawNovo !== null) {
         if (frameYawAplicado !== null) {
-          lon += sinal * (frameYawAplicado - yawNovo) * 180 / Math.PI
+          lon += SINAL_FRAME_YAW * (frameYawAplicado - yawNovo) * 180 / Math.PI
         }
         frameYawAplicado = yawNovo
-        fp.frameYaw = sinal * yawNovo + offRad
+        fp.frameYaw = SINAL_FRAME_YAW * yawNovo + offRad
       }
 
       const matVisivel = frenteEhA ? matA : matB
