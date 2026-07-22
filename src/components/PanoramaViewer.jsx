@@ -327,18 +327,20 @@ export default function PanoramaViewer({
       // (2) ajusto lon pela diferenca de yaw entre a foto anterior e a nova, pra
       // a VISAO continuar apontando pra mesma direcao do mundo (sem "pulo").
       const yawNovo = yawMundoDaPose(quadro?.pose_raw?.quat_wc)
-      // DIAGNOSTICO TEMPORARIO (remover depois de confirmar): abra o console
-      // (F12) e navegue entre as fotos. Se aparecer "[opcao2]" com um yaw em
-      // graus -> codigo novo no ar E a foto tem pose_raw. Se yaw=null -> essa
-      // vistoria nao tem pose_raw (por isso nada muda). Se nao aparecer nada ->
-      // deploy antigo ainda em cache.
-      console.log('[opcao2] frame', indice, 'yaw(graus)=', yawNovo === null ? null : (yawNovo * 180 / Math.PI).toFixed(1), 'temPoseRaw=', !!quadro?.pose_raw)
+      // AJUSTE AO VIVO (temporario): no console do navegador voce pode testar
+      // convencao sem esperar novo deploy:
+      //   window.__SINAL_FRAME_YAW = -1   (inverte o sentido do giro)
+      //   window.__OFFSET_FRAME_YAW = 90  (rotacao constante do cone, em graus)
+      // Depois de achar os valores que alinham, me passe os dois que eu fixo.
+      const sinal = (typeof window !== 'undefined' && window.__SINAL_FRAME_YAW) || SINAL_FRAME_YAW
+      const offRad = ((typeof window !== 'undefined' && window.__OFFSET_FRAME_YAW) || 0) * Math.PI / 180
+      console.log('[opcao2] frame', indice, 'yaw(graus)=', yawNovo === null ? null : (yawNovo * 180 / Math.PI).toFixed(1), 'sinal=', sinal, 'off=', window.__OFFSET_FRAME_YAW || 0)
       if (yawNovo !== null) {
         if (frameYawAplicado !== null) {
-          lon += SINAL_FRAME_YAW * (frameYawAplicado - yawNovo) * 180 / Math.PI
+          lon += sinal * (frameYawAplicado - yawNovo) * 180 / Math.PI
         }
         frameYawAplicado = yawNovo
-        fp.frameYaw = SINAL_FRAME_YAW * yawNovo
+        fp.frameYaw = sinal * yawNovo + offRad
       }
 
       const matVisivel = frenteEhA ? matA : matB
