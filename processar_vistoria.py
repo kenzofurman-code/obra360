@@ -332,7 +332,8 @@ def calibrar_auto_por_portas(raw_waypoints: list, vaos: list, aspecto: float = 1
 
 def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
                         heading_offset: float, path_scale: float, espelhar: bool,
-                        aspecto: float = 1.0, min_portas: int = 4) -> tuple:
+                        aspecto: float = 1.0, min_portas: int = 4,
+                        raio_ancora: float = 0.12) -> tuple:
     """
     Recalibra (ancora1, path_scale) usando as portas detectadas no PDF como
     pontos de referência MÚLTIPLOS, em vez de confiar só na âncora única
@@ -417,6 +418,30 @@ def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
             pontos_fis.append({'t': wp['t'], 'x': tx_i + u * escala_i, 'y': ty_i + v * escala_i})
         return detectar_cruzamentos_vaos(pontos_fis, vaos_fis)
 
+    # TRAVA DE ANCORA (2026-07-21, ideia do Pedro): o refino nao pode arrastar a
+    # ancora pra LONGE do ponto A que o usuario marcou. Sem isso, o ajuste de
+    # translacao LIVRE escorrega a trajetoria pra uma posicao que casa portas
+    # por acaso (e absorve erro - foi a "ancora andar sozinha" que o Pedro
+    # relatou). Prende (tx,ty) a um raio maximo (unid. de planta) do A original
+    # e, se precisou clampar, reajusta SO a escala com a ancora fixa.
+    A0x, A0y = ancora1['x'], ancora1['y'] * aspecto  # ancora original (espaco fisico)
+
+    def _clamp_ancora(escala, tx, ty, fontes, alvos):
+        dx = tx - A0x
+        dy_plan = (ty - A0y) / aspecto if aspecto > 1e-9 else (ty - A0y)
+        dist = math.hypot(dx, dy_plan)
+        if dist <= raio_ancora:
+            return escala, tx, ty
+        f = raio_ancora / dist
+        tx_c = A0x + dx * f
+        ty_c = A0y + dy_plan * f * aspecto
+        # reajusta so a escala com a translacao presa (minimos quadrados 1D)
+        t_c = np.array([tx_c, ty_c])
+        num = float((fontes * (alvos - t_c)).sum())
+        den = float((fontes * fontes).sum())
+        escala_c = num / den if den > 1e-9 else escala
+        return escala_c, float(tx_c), float(ty_c)
+
     # Refinamento iterativo: comeca do chute atual (ancora1/path_scale),
     # detecta os cruzamentos geometricos, reajusta (so' escala+translacao) e
     # repete com o ajuste da rodada anterior - um alinhamento melhor pode
@@ -431,6 +456,7 @@ def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
         cruzamentos = novos
         fontes, alvos = _fontes_alvos(cruzamentos)
         escala_i, tx_i, ty_i = _ajustar_escala_translacao(fontes, alvos)
+        escala_i, tx_i, ty_i = _clamp_ancora(escala_i, tx_i, ty_i, fontes, alvos)
 
     if cruzamentos is None or len(cruzamentos) < min_portas:
         return ancora1, heading_offset, path_scale, espelhar, {
@@ -449,6 +475,7 @@ def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
     if len(i_val) == 0:
         i_val = i_fit
     escala_fit, tx_fit, ty_fit = _ajustar_escala_translacao(fontes[i_fit], alvos[i_fit])
+    escala_fit, tx_fit, ty_fit = _clamp_ancora(escala_fit, tx_fit, ty_fit, fontes[i_fit], alvos[i_fit])
     pred_val = np.array([tx_fit, ty_fit]) + escala_fit * fontes[i_val]
     residual_val = float(np.linalg.norm(pred_val - alvos[i_val], axis=1).mean())
 
@@ -463,8 +490,10 @@ def calibrar_por_portas(raw_waypoints: list, vaos: list, ancora1: dict,
             'motivo': 'residual de validação alto demais - mantendo calibração manual',
         }
 
-    # Ajuste final com TODAS as portas (não só a metade de fit da validação).
+    # Ajuste final com TODAS as portas (não só a metade de fit da validação),
+    # ainda com a ancora presa ao raio maximo do A original.
     escala_final, tx_final, ty_final = _ajustar_escala_translacao(fontes, alvos)
+    escala_final, tx_final, ty_final = _clamp_ancora(escala_final, tx_final, ty_final, fontes, alvos)
     ancora1_fit = {'x': float(tx_final), 'y': float(ty_final) / aspecto}
 
     return ancora1_fit, heading_offset, escala_final, espelhar, {
@@ -655,43 +684,39 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     # sem depender do chute manual estar perto. Se achar um alinhamento com
     # portas suficientes (cruzamentos reais), usa como chute do refino; senao
     # mantem o heading/escala manuais (comportamento antigo).
+    # REVISAO 2026-07-21 (Pedro): a busca AUTOMATICA de heading NAO e' confiavel
+    # - contagem de portas nao distingue rotacao (testado em run boa E ruim: um
+    # heading errado cruza tantas portas quanto o certo, porque a trajetoria
+    # cobre a planta). Entao: heading vem do MANUAL (o humano reconhece a forma
+    # do predio); a automatica so' e' adotada se achar um heading UNICO (raro,
+    # so' em trajetoria muito limpa). O que a automatica FAZ bem, e sempre roda,
+    # e' refinar ESCALA + ANCORA com o heading fixo e a ANCORA PRESA a um raio
+    # do ponto A que o usuario marcou (ver calibrar_por_portas/_clamp_ancora).
     auto = calibrar_auto_por_portas(raw_waypoints, vaos, aspecto)
-    pular_refino = False
     if isinstance(auto, dict) and auto.get('ambiguo'):
-        # Gate de ambiguidade (achado do Pedro 2026-07-21): varios headings
-        # empatam -> quase sempre deriva de SLAM. NAO sobrescreve o manual E
-        # pula o refino (que tambem moveria a ancora com a mesma cegueira de
-        # rotacao) - o manual do usuario fica INTACTO.
-        print(f"\n[Pipeline] *** Calibracao automatica INCONCLUSIVA ***: "
-              f"{auto['motivo']}.")
-        print(f"    >>> MANTENDO o heading/escala/ancora MANUAIS INTACTOS "
-              f"(heading={heading_offset}, escala={path_scale}, espelhar={espelhar}). "
-              "VERIFIQUE o alinhamento no site - a trajetoria pode estar com deriva.")
-        pular_refino = True
+        print(f"\n[Pipeline] Busca de heading INCONCLUSIVA ({auto['motivo']}) - "
+              f"MANTENDO a bussola manual (heading={heading_offset}, espelhar={espelhar}) "
+              "e refinando so' escala+ancora (ancora presa ao ponto A).")
     elif auto is not None:
         a_anc, a_head, a_scale, a_esp, a_info = auto
-        print(f"\n[Pipeline] Calibracao AUTOMATICA GLOBAL (sem chute manual): "
-              f"heading={a_head:.0f} escala={a_scale:.4f} espelhar={a_esp} "
-              f"({a_info['n_cruz']} portas cruzadas de verdade) - adotando como chute.")
+        print(f"\n[Pipeline] Heading UNICO encontrado pelas portas: heading={a_head:.0f} "
+              f"escala={a_scale:.4f} espelhar={a_esp} ({a_info['n_cruz']} portas) - adotando.")
         ancora1, heading_offset, path_scale, espelhar = a_anc, a_head, a_scale, a_esp
     else:
-        print(f"\n[Pipeline] Busca global nao achou portas suficientes - "
-              "usando heading/escala manuais como chute.")
+        print(f"\n[Pipeline] Poucas portas pra busca global - usando bussola manual.")
 
-    if pular_refino:
-        print(f"\n[Pipeline] Refino por portas PULADO (calibracao ambigua) - "
-              "manual preservado sem tocar na ancora.")
+    # Refino SEMPRE: heading fixo (manual ou auto-unico), escala+ancora ajustadas
+    # com a ancora TRAVADA a um raio maximo do ponto A do usuario.
+    print(f"\n[Pipeline] Refinando escala + ancora por multiplas portas "
+          f"(heading fixo, ancora presa ao raio do ponto A)...")
+    ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
+        raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
+    if calib_info.get('usado_auto'):
+        print(f"  [OK] Escala/ancora refinadas: {calib_info['n_portas']} portas, "
+              f"residual de validacao={calib_info['residual_val']:.4f}")
     else:
-        print(f"\n[Pipeline] Refinando escala/ancora por multiplas portas "
-              f"(heading/espelhar fixos)...")
-        ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
-            raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
-        if calib_info.get('usado_auto'):
-            print(f"  [OK] Calibracao automatica adotada: {calib_info['n_portas']} portas, "
-                  f"residual de validacao={calib_info['residual_val']:.4f}")
-        else:
-            print(f"  [AVISO] Calibracao automatica NAO adotada ({calib_info.get('motivo')}) "
-                  "- usando ancora/heading/escala manuais como estavam.")
+        print(f"  [AVISO] Refino NAO adotado ({calib_info.get('motivo')}) "
+              "- mantendo escala/ancora manuais.")
 
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")

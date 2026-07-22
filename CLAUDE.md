@@ -842,6 +842,27 @@ real (não só lidos/revisados) — resultado numérico ao lado.
     P073 - reduz ruído na calibração por portas, mas NÃO resolve a ambiguidade
     de heading do item 24 (essa é deriva do SLAM).
 
+26. **Calibração automática revista (2026-07-21, decisão do Pedro): heading
+    vem do MANUAL, só escala+âncora são automáticas (com âncora TRAVADA).**
+    Testado em run boa E ruim: contagem de portas NÃO distingue heading (um
+    heading errado cruza tantas portas quanto o certo, porque a trajetória
+    cobre a planta - sinal local, insensível à rotação global). Buscar heading
+    do zero pelas portas não funciona. O que funciona (e sempre funcionou - a
+    imagem de 1.3%): o humano dá o heading, a automática refina escala+âncora.
+    - Ideia do Pedro pra âncora: travar a âncora a um RAIO MÁXIMO do ponto A
+      marcado, senão o ajuste de translação livre escorrega pra casar portas
+      por acaso (era a "âncora andando sozinha"). Implementado em
+      `calibrar_por_portas` (`_clamp_ancora`, `raio_ancora=0.12` unid. planta):
+      clampa a âncora ao raio e reajusta só a escala com ela presa.
+    - `run_map_matching`: a busca auto de heading só adota se achar heading
+      ÚNICO (raro); senão MANTÉM a bússola manual e SEMPRE refina escala+âncora
+      (presa). Removido o "pular refino" do gate de ambiguidade (item 24) - agora
+      refina mesmo quando ambíguo, só não mexe no heading.
+    - **Validado**: heading manual 137.1 + âncora A → refino mantém heading,
+      escala 0.0294, âncora move só 0.003 do A (limite 0.12), 18 portas,
+      residual 1.2%. **Falta**: Pedro reprocessar com a bússola correta setada
+      pra ver o encaixe melhorar no site.
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita
