@@ -659,6 +659,49 @@ def associar_ambientes(pontos_planta: list, ambientes: list, aspecto: float = 1.
     return resultado
 
 
+def buscar_heading_por_portas(raw_waypoints, vaos, ancora_manual, path_scale, espelhar,
+                              aspecto, passo=10, min_portas=6, raio_ancora=0.12):
+    """Busca AUTOMATICA de heading + escala minimizando o DESVIO das portas, com
+    a ANCORA PRESA ao ponto A que o usuario marcou (ideia do Pedro 2026-07-21).
+
+    Pra cada heading (passo em graus), roda calibrar_por_portas - que prende a
+    ancora ao raio de A e refina a escala - e le quantas portas cruzam e o
+    residual. Score: entre os headings que cruzam MUITAS portas (>= 70%% do
+    maximo encontrado - senao um heading que pega 3 portas por acaso ganharia
+    so' por ter desvio baixo), escolhe o de MENOR desvio.
+
+    Gate de ambiguidade: se >= 2 headings DISTINTOS (>30 graus) empatam no
+    desvio (dentro de 20%%), devolve {'ambiguo':True} - numa trajetoria com
+    deriva varios headings encaixam parecido e nao da pra decidir; ai o
+    chamador mantem a bussola manual.
+
+    Retorna dict {heading, anc, sc, n, resid}, ou {'ambiguo':True,...}, ou None
+    (poucas portas)."""
+    cands = []
+    for h in range(0, 360, passo):
+        anc, hh, sc, esp, info = calibrar_por_portas(
+            raw_waypoints, vaos, ancora_manual, float(h), path_scale, espelhar,
+            aspecto, min_portas=min_portas, raio_ancora=raio_ancora)
+        if info.get('usado_auto') and info.get('n_portas', 0) >= min_portas:
+            cands.append(dict(heading=float(h), anc=anc, sc=float(sc),
+                              n=int(info['n_portas']), resid=float(info['residual_val'])))
+    if not cands:
+        return None
+    max_n = max(c['n'] for c in cands)
+    bons = [c for c in cands if c['n'] >= 0.7 * max_n]
+    bons.sort(key=lambda c: c['resid'])
+    melhor = bons[0]
+    for c in bons:
+        if (abs(((c['heading'] - melhor['heading'] + 180) % 360) - 180) > 30
+                and c['resid'] <= melhor['resid'] * 1.2):
+            return {'ambiguo': True,
+                    'motivo': (f"headings {round(melhor['heading'])} e {round(c['heading'])} "
+                               f"empatam no desvio ({melhor['resid']:.4f} vs {c['resid']:.4f}) "
+                               "- trajetoria provavelmente com deriva"),
+                    'headings_empatados': sorted({round(melhor['heading']), round(c['heading'])})}
+    return melhor
+
+
 def run_map_matching(raw_waypoints: list, vaos: list,
                      ancora1: dict, heading_offset: float,
                      path_scale: float, espelhar: bool,
@@ -684,39 +727,31 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     # sem depender do chute manual estar perto. Se achar um alinhamento com
     # portas suficientes (cruzamentos reais), usa como chute do refino; senao
     # mantem o heading/escala manuais (comportamento antigo).
-    # REVISAO 2026-07-21 (Pedro): a busca AUTOMATICA de heading NAO e' confiavel
-    # - contagem de portas nao distingue rotacao (testado em run boa E ruim: um
-    # heading errado cruza tantas portas quanto o certo, porque a trajetoria
-    # cobre a planta). Entao: heading vem do MANUAL (o humano reconhece a forma
-    # do predio); a automatica so' e' adotada se achar um heading UNICO (raro,
-    # so' em trajetoria muito limpa). O que a automatica FAZ bem, e sempre roda,
-    # e' refinar ESCALA + ANCORA com o heading fixo e a ANCORA PRESA a um raio
-    # do ponto A que o usuario marcou (ver calibrar_por_portas/_clamp_ancora).
-    auto = calibrar_auto_por_portas(raw_waypoints, vaos, aspecto)
+    # Calibracao AUTOMATICA (2026-07-21, direcao do Pedro): busca o HEADING e a
+    # ESCALA que dao o MENOR DESVIO das portas, com a ANCORA PRESA a um raio do
+    # ponto A que o usuario marcou (buscar_heading_por_portas). Nao depende de
+    # chute de heading. Se a busca ficar ambigua (varios headings empatam no
+    # desvio - tipico de trajetoria com deriva), mantem a bussola manual e so'
+    # refina escala+ancora, avisando pra verificar no site.
+    auto = buscar_heading_por_portas(raw_waypoints, vaos, ancora1, path_scale,
+                                     espelhar, aspecto, raio_ancora=0.12)
     if isinstance(auto, dict) and auto.get('ambiguo'):
         print(f"\n[Pipeline] Busca de heading INCONCLUSIVA ({auto['motivo']}) - "
               f"MANTENDO a bussola manual (heading={heading_offset}, espelhar={espelhar}) "
-              "e refinando so' escala+ancora (ancora presa ao ponto A).")
+              "e refinando so' escala+ancora presa. VERIFIQUE no site.")
+        ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
+            raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
     elif auto is not None:
-        a_anc, a_head, a_scale, a_esp, a_info = auto
-        print(f"\n[Pipeline] Heading UNICO encontrado pelas portas: heading={a_head:.0f} "
-              f"escala={a_scale:.4f} espelhar={a_esp} ({a_info['n_cruz']} portas) - adotando.")
-        ancora1, heading_offset, path_scale, espelhar = a_anc, a_head, a_scale, a_esp
+        heading_offset = auto['heading']
+        path_scale = auto['sc']
+        ancora1 = auto['anc']
+        print(f"\n[Pipeline] Calibracao AUTOMATICA por portas: heading={heading_offset:.0f} "
+              f"escala={path_scale:.4f} espelhar={espelhar} | {auto['n']} portas, "
+              f"desvio={auto['resid']:.4f} (menor entre os headings testados).")
+        calib_info = {'usado_auto': True, 'n_portas': auto['n'], 'residual_val': auto['resid']}
     else:
-        print(f"\n[Pipeline] Poucas portas pra busca global - usando bussola manual.")
-
-    # Refino SEMPRE: heading fixo (manual ou auto-unico), escala+ancora ajustadas
-    # com a ancora TRAVADA a um raio maximo do ponto A do usuario.
-    print(f"\n[Pipeline] Refinando escala + ancora por multiplas portas "
-          f"(heading fixo, ancora presa ao raio do ponto A)...")
-    ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
-        raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
-    if calib_info.get('usado_auto'):
-        print(f"  [OK] Escala/ancora refinadas: {calib_info['n_portas']} portas, "
-              f"residual de validacao={calib_info['residual_val']:.4f}")
-    else:
-        print(f"  [AVISO] Refino NAO adotado ({calib_info.get('motivo')}) "
-              "- mantendo escala/ancora manuais.")
+        print(f"\n[Pipeline] Poucas portas detectadas - usando calibracao manual como esta.")
+        calib_info = {'usado_auto': False, 'motivo': 'poucas portas'}
 
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")
