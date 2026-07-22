@@ -149,7 +149,11 @@ export default function PlantaViewer({
         // orientacao real a cada frame -, deixando o cone dessincronizado da
         // visao. Com isso, o valor ja' e' o yaw real no mundo. Frames sem
         // pose_raw tem frameYaw=0 (comportamento antigo).
-        return yawCamera + (vr?.frameYaw || 0)
+        // DIAGNOSTICO (temporario): window.__CONE_SO_FRAME=true faz o cone
+        // ignorar o giro da visao (yawCamera) e usar so' o frameYaw - isola o
+        // teste de convencao do pan.
+        const usaCamera = !(typeof window !== 'undefined' && window.__CONE_SO_FRAME)
+        return (usaCamera ? yawCamera : 0) + (vr?.frameYaw || 0)
       }
     } catch (e) {
       // Falha silenciosa caso o plugin ainda não esteja inicializado
