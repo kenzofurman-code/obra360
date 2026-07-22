@@ -40,6 +40,25 @@ function interpolarPosicao(waypoints, tempoAtual) {
  * Isso permite trocar Player360 (vídeo) por PanoramaViewer (fotos 360°) sem tocar em
  * nenhum desses três lugares - eles continuam achando que estão controlando um vídeo.
  */
+// Yaw (rotacao em torno do eixo vertical Y) da CAMERA no mundo, a partir do
+// quaternion pose_raw.quat_wc [x,y,z,w] (camera->mundo, convencao scipy). A
+// "frente" da foto equiretangular e' +Z no frame da camera (ver raio_do_clique
+// em medir_panorama.py: u=0.5,v=0.5 -> dir=(0,0,1)). Rotaciona (0,0,1) pelo
+// quaternion e mede o yaw no plano XZ. Usado pra sincronizar o cone/visao com a
+// orientacao real da camera em cada frame (opcao 2, 2026-07-22).
+export function yawMundoDaPose(q) {
+  if (!q || q.length < 4) return null
+  const [x, y, z, w] = q
+  const fx = 2 * (x * z + w * y)          // componente X do +Z rotacionado
+  const fz = 1 - 2 * (x * x + y * y)      // componente Z do +Z rotacionado
+  return Math.atan2(fx, fz)               // radianos
+}
+
+// Sinal de convencao do yaw do frame (three.js vs SLAM). Se, ao trocar de
+// foto, a visao/cone girarem pro lado ERRADO, troque pra -1. (Ajuste esperado
+// de 1 rodada no navegador - nao da pra confirmar sem ver.)
+const SINAL_FRAME_YAW = 1
+
 class FakePlayer {
   constructor() {
     this._listeners = {}
@@ -48,6 +67,7 @@ class FakePlayer {
     this._paused = true
     this._rate = 1
     this.camera = null
+    this.frameYaw = 0  // yaw do mundo da foto atual (rad) - ver yawMundoDaPose
   }
   on(evt, cb) {
     if (!this._listeners[evt]) this._listeners[evt] = []
@@ -89,7 +109,7 @@ class FakePlayer {
     return this._rate
   }
   vr() {
-    return { camera: this.camera }
+    return { camera: this.camera, frameYaw: this.frameYaw }
   }
   isDisposed() {
     return false
@@ -283,6 +303,7 @@ export default function PanoramaViewer({
     let frenteEhA = true
     let indiceAtualExibido = -1
     let transicaoAtiva = false
+    let frameYawAplicado = null  // yaw (rad) do frame atualmente exibido (opcao 2)
 
     const mostrarQuadro = async (indice) => {
       if (indice === indiceAtualExibido || transicaoAtiva) return
@@ -297,6 +318,22 @@ export default function PanoramaViewer({
       }
       if (!active) return
       indiceAtualExibido = indice
+
+      // Opcao 2 (2026-07-22): orientacao world-consistent. Cada foto tem uma
+      // orientacao de camera propria (pose_raw.quat_wc). Sem isso, lon=0 mostra
+      // sempre a "frente da foto" - que aponta pra direcoes diferentes do mundo
+      // a cada frame, entao o cone (que le a direcao da camera) dessincroniza.
+      // Aqui: (1) publico o yaw do mundo da foto em fp.frameYaw pro cone somar;
+      // (2) ajusto lon pela diferenca de yaw entre a foto anterior e a nova, pra
+      // a VISAO continuar apontando pra mesma direcao do mundo (sem "pulo").
+      const yawNovo = yawMundoDaPose(quadro?.pose_raw?.quat_wc)
+      if (yawNovo !== null) {
+        if (frameYawAplicado !== null) {
+          lon += SINAL_FRAME_YAW * (frameYawAplicado - yawNovo) * 180 / Math.PI
+        }
+        frameYawAplicado = yawNovo
+        fp.frameYaw = SINAL_FRAME_YAW * yawNovo
+      }
 
       const matVisivel = frenteEhA ? matA : matB
       const matOculto = frenteEhA ? matB : matA

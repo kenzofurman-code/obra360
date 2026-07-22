@@ -142,7 +142,14 @@ export default function PlantaViewer({
         
         // Em Three.js, Y é para cima, X é para a direita e Z é para trás (vetor de visão padrão é -Z).
         // Calculamos o yaw no plano XZ em relação ao eixo Z negativo (frente)
-        return Math.atan2(dir.x, -dir.z)
+        const yawCamera = Math.atan2(dir.x, -dir.z)
+        // Opcao 2 (2026-07-22): soma o yaw do mundo da FOTO atual (frameYaw,
+        // publicado pelo PanoramaViewer a partir do pose_raw de cada frame).
+        // Sem isso, a direcao lida e' relativa a "frente da foto" - que muda de
+        // orientacao real a cada frame -, deixando o cone dessincronizado da
+        // visao. Com isso, o valor ja' e' o yaw real no mundo. Frames sem
+        // pose_raw tem frameYaw=0 (comportamento antigo).
+        return yawCamera + (vr?.frameYaw || 0)
       }
     } catch (e) {
       // Falha silenciosa caso o plugin ainda não esteja inicializado
