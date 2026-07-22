@@ -40,6 +40,11 @@ export default function Visita() {
   const [ancora2, setAncora2] = useState(null)
   const [isImported, setIsImported] = useState(false)
   const [pathScale, setPathScale] = useState(0.50)
+  // Multiplicador SO' do eixo X da planta (default 1.0 = sem efeito). Corrige
+  // esticao residual de proporcao num sentido so' quando o aspecto do PDF nao
+  // bate 100% com a imagem exibida - ajuste manual pos-calibracao, mesmo
+  // espirito de passarela_rotacao/cone_frame_offset. Nao reprocessa nada.
+  const [escalaX, setEscalaX] = useState(1.0)
   const [espelharCaminho, setEspelharCaminho] = useState(true)
   // Segundos a cortar do inicio do video (ex.: tempo parado posicionando a
   // camera antes de andar) - lido pelo worker.py (corte_inicial_seg) antes de
@@ -162,7 +167,7 @@ export default function Visita() {
 
         return {
           ...pt,
-          x: ancora1.x + rx,
+          x: ancora1.x + rx * escalaX,
           y: ancora1.y + ry / plantaAspecto
         }
       }
@@ -182,7 +187,7 @@ export default function Visita() {
 
       return {
         ...pt,
-        x: ancora1.x + rx * pathScale,
+        x: ancora1.x + rx * pathScale * escalaX,
         y: ancora1.y + (ry * pathScale) / plantaAspecto
       }
     }
@@ -196,13 +201,13 @@ export default function Visita() {
       const dy = -(pt.y - W1.y) // Inverte Y para subir na planta ao andar para frente
       return {
         ...pt,
-        x: 0.5 + dx * pathScale,
+        x: 0.5 + dx * pathScale * escalaX,
         y: 0.5 + dy * pathScale
       }
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho, plantaAspecto])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, escalaX, espelharCaminho, plantaAspecto])
 
   // Realiza o inverso do alinhamento: converte coordenadas [0, 1] da planta para a escala/giro bruto do Python
   const desalinharPonto = useCallback((pt) => {
@@ -230,7 +235,7 @@ export default function Visita() {
         const rotation = angleA - angleW
         const invRotation = -rotation
 
-        const dx = pt.x - ancora1.x
+        const dx = (pt.x - ancora1.x) / escalaX
         const dy = (pt.y - ancora1.y) * plantaAspecto // volta ao espaco fisico
 
         // Aplica a rotação inversa no vetor de diferença
@@ -253,7 +258,7 @@ export default function Visita() {
     //    backend usa (desalinhar_ponto em processar_vistoria.py). Aplica SEMPRE que
     //    houver âncora A (ver comentário equivalente em alinharPonto acima).
     if (ancora1) {
-      const rx = (pt.x - ancora1.x) / pathScale
+      const rx = (pt.x - ancora1.x) / pathScale / escalaX
       const ry = ((pt.y - ancora1.y) * plantaAspecto) / pathScale
       const theta = ((headingOffset + 180) * Math.PI) / 180
 
@@ -271,7 +276,7 @@ export default function Visita() {
     if (waypoints.length > 0) {
       const sorted = [...waypoints].sort((a, b) => a.t - b.t)
       const W1 = sorted[0]
-      const rx = (pt.x - 0.5) / pathScale
+      const rx = ((pt.x - 0.5) / pathScale) / escalaX
       const ry = (pt.y - 0.5) / pathScale
       const finalRx = espelharCaminho ? -rx : rx
       const finalRy = -ry // Desfaz a inversão do eixo Y
@@ -283,7 +288,7 @@ export default function Visita() {
     }
 
     return pt
-  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, espelharCaminho, plantaAspecto])
+  }, [waypoints, isImported, ancora1, ancora2, headingOffset, pathScale, escalaX, espelharCaminho, plantaAspecto])
 
   const waypointsAlinhados = useMemo(() => {
     return waypoints.map(alinharPonto)
@@ -380,6 +385,7 @@ export default function Visita() {
       setAncora2(v.ancora2 || null)
       setIsImported(v.is_imported || false)
       setPathScale(v.path_scale ?? 0.50)
+      setEscalaX(v.escala_x ?? 1.0)
       setEspelharCaminho(v.espelhar_caminho ?? false)
       setCorteInicial(v.corte_inicial_seg ?? 0)
       setRibbonScale(v.passarela_escala ?? 1.0)
@@ -579,6 +585,7 @@ export default function Visita() {
         ancora1,
         ancora2,
         path_scale: pathScale,
+        escala_x: escalaX,
         espelhar_caminho: espelharCaminho,
         corte_inicial_seg: corteInicial,
         passarela_escala: ribbonScale,
@@ -1384,6 +1391,43 @@ export default function Visita() {
                       Aumenta ou diminui a escala do trajeto para caber na planta baixa.
                     </p>
                   )}
+                </div>
+
+                {/* Multiplicador SO' do eixo X - corrige esticao residual num sentido
+                    (proporcao do PDF vs imagem). Sempre disponivel (independe do metodo
+                    de escala global). 100% = sem efeito. */}
+                <div className="bg-concreto-900/55 border border-concreto-800/70 rounded-lg p-3 flex flex-col gap-2 shrink-0">
+                  <div className="flex justify-between items-center text-xs font-mono">
+                    <span className="text-aco-300 font-medium text-[11px]">Proporção Horizontal (eixo X)</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="20"
+                        max="500"
+                        step="0.5"
+                        value={(escalaX * 100).toFixed(1)}
+                        onChange={e => {
+                          const v = parseFloat(e.target.value)
+                          if (!Number.isNaN(v) && v > 0) setEscalaX(v / 100)
+                        }}
+                        className="w-14 bg-concreto-950 border border-concreto-700 rounded text-sinal-400 font-bold text-[10px] px-1 py-0.5 text-right"
+                      />
+                      <span className="text-sinal-400 font-bold text-[10px]">%</span>
+                    </div>
+                  </div>
+                  <input
+                    type="range"
+                    min="50"
+                    max="200"
+                    step="0.5"
+                    value={escalaX * 100}
+                    onChange={e => setEscalaX(parseFloat(e.target.value) / 100)}
+                    className="w-full h-1 bg-concreto-800 rounded-lg appearance-none cursor-pointer accent-sinal-500 border border-concreto-700/40"
+                  />
+                  <p className="text-[9px] text-aco-400 leading-normal font-mono">
+                    Estica ou comprime só na horizontal. Use quando o trajeto parece
+                    achatado/alargado num sentido. 100% = sem alteração.
+                  </p>
                 </div>
 
                 {/* Toggle de Espelhamento Horizontal - idem, disponível sempre (caso
