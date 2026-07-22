@@ -306,7 +306,6 @@ export default function PanoramaViewer({
     let frenteEhA = true
     let indiceAtualExibido = -1
     let transicaoAtiva = false
-    let frameYawAplicado = null  // yaw (rad) do frame atualmente exibido (opcao 2)
 
     const mostrarQuadro = async (indice) => {
       if (indice === indiceAtualExibido || transicaoAtiva) return
@@ -329,14 +328,14 @@ export default function PanoramaViewer({
       // Aqui: (1) publico o yaw do mundo da foto em fp.frameYaw pro cone somar;
       // (2) ajusto lon pela diferenca de yaw entre a foto anterior e a nova, pra
       // a VISAO continuar apontando pra mesma direcao do mundo (sem "pulo").
+      // Publica o yaw do mundo da foto pro cone da planta sincronizar (opcao 2).
+      // NAO ajusta lon/camera aqui: mexer na camera na troca de frame fazia a
+      // fita do caminho (geometria fixa na cena) "andar" na tela - efeito
+      // colateral removido 2026-07-22 a pedido do Pedro. A foto e a fita ficam
+      // paradas; so' o cone gira acompanhando a orientacao real do frame.
       const yawNovo = yawMundoDaPose(quadro?.pose_raw?.quat_wc)
-      const offRad = OFFSET_FRAME_YAW_GRAUS * Math.PI / 180
       if (yawNovo !== null) {
-        if (frameYawAplicado !== null) {
-          lon += SINAL_FRAME_YAW * (frameYawAplicado - yawNovo) * 180 / Math.PI
-        }
-        frameYawAplicado = yawNovo
-        fp.frameYaw = SINAL_FRAME_YAW * yawNovo + offRad
+        fp.frameYaw = SINAL_FRAME_YAW * yawNovo + OFFSET_FRAME_YAW_GRAUS * Math.PI / 180
       }
 
       const matVisivel = frenteEhA ? matA : matB
