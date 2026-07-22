@@ -466,16 +466,15 @@ export default function PanoramaViewer({
       const meshVisivel = frenteEhA ? sphereA : sphereB
       const hits = raycasterMedicao.intersectObject(meshVisivel)
       if (hits.length === 0 || !hits[0].uv) return null
-      // ATENÇÃO - convenção do v do UV ainda NÃO confirmada visualmente contra
-      // o que medir_panorama.py/api_medicao.py esperam (u=0..1 esquerda->
-      // direita, v=0..1 topo->baixo, mesma convenção da imagem equiretangular
-      // original). O SphereGeometry padrão do three.js costuma sair nessa
-      // mesma convenção, mas se a medição sair sistematicamente errada
-      // (ex.: sempre no lado/altura oposto do que foi clicado), o mais
-      // provável é essa linha precisar de "1 - hits[0].uv.y" - confirmar
-      // clicando num ponto reconhecível (quina de porta) e comparando com
-      // o resultado antes de confiar cegamente nele.
-      return { u: hits[0].uv.x, v: hits[0].uv.y, point: hits[0].point.clone() }
+      // Convencao do UV (corrigida 2026-07-22): a API/medir_panorama.py usa
+      // equiretangular u=0..1 esquerda->direita, v=0..1 TOPO->baixo. O
+      // SphereGeometry do three.js poe uv.y=1 no TOPO (uv.y=0 embaixo) - e o
+      // scale(-1,1,1) inverte a esfera no MUNDO mas NAO mexe no UV da
+      // geometria. Entao: u = uv.x (ok), v = 1 - uv.y (INVERTE - senao a
+      // medicao saia sempre na altura espelhada, causa provavel de "medicao
+      // muito ruim"). Confirmar com o overlay de landmarks (endpoint
+      // /landmarks_frame) - os pontos tem que cair nas features reais.
+      return { u: hits[0].uv.x, v: 1 - hits[0].uv.y, point: hits[0].point.clone() }
     }
 
     const adicionarMarcadorMedicao = (point, cor) => {

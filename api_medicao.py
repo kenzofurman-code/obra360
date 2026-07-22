@@ -59,7 +59,7 @@ from flask_cors import CORS
 
 from medir_panorama import (carregar_mapa, medir_ponto_robusto, calibrar_escala,
                              medir_por_reprojecao, pose_no_frame_do_mapa,
-                             medir_vao_coplanar)
+                             medir_vao_coplanar, reprojetar_landmarks)
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache_mapas')
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -384,6 +384,43 @@ def vistoria_excluir_storage():
           f"video={'sim' if video_removido else 'nao'}")
     return jsonify(sucesso=True, objetos_removidos=removidos,
                     video_removido=video_removido)
+
+
+@app.route('/landmarks_frame', methods=['POST'])
+def landmarks_frame():
+    """Reprojeta os landmarks do mapa NA FOTO de um quadro (pra o frontend
+    sobrepor como pontos - guia de onde da' pra medir + diagnostico da
+    convencao de UV). Body: {mapa_url, t} (t = tempo do quadro; a pose vem dos
+    keyframes do proprio mapa, ver medir_panorama). Devolve lista de {u,v,dist}
+    dos landmarks VISIVEIS (na frente da camera), amostrada pra nao mandar
+    dezenas de milhares de pontos pro navegador."""
+    erro_auth = _checar_api_key()
+    if erro_auth:
+        return erro_auth
+    body = request.get_json(force=True) or {}
+    mapa_url = body.get('mapa_url')
+    t = body.get('t')
+    max_pontos = int(body.get('max_pontos', 4000))
+    if not mapa_url or t is None:
+        return jsonify(erro="Informe mapa_url e t (tempo do quadro)."), 400
+    try:
+        keyframes, landmarks_pos = _baixar_mapa(mapa_url)
+        kf = pose_no_frame_do_mapa(keyframes, float(t))
+        if kf is None:
+            return jsonify(erro=f"Sem keyframe do mapa perto de t={t}s."), 200
+        us, vs, dist = reprojetar_landmarks(kf, landmarks_pos)
+        # so' os na frente/visiveis: dist finita e positiva (reprojetar ja'
+        # devolve tudo; filtra os muito longe que sao ruido)
+        import numpy as np
+        vis = dist < np.percentile(dist, 95)
+        idx = np.where(vis)[0]
+        if len(idx) > max_pontos:
+            idx = idx[np.linspace(0, len(idx) - 1, max_pontos).astype(int)]
+        pts = [{'u': round(float(us[k]), 5), 'v': round(float(vs[k]), 5),
+                'dist': round(float(dist[k]), 3)} for k in idx]
+    except Exception as e:
+        return jsonify(erro=f"Falha ao reprojetar landmarks: {e}"), 500
+    return jsonify(pontos=pts, total=len(pts))
 
 
 @app.route('/saude', methods=['GET'])
