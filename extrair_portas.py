@@ -148,20 +148,50 @@ def _segmentos_retos(page, limite_x):
     return segs
 
 
-def _achar_angulo_parede(lx, ly, segs, raio=150.0, separacao_min=3.0, separacao_max=40.0, dif_ang_max=8.0):
-    """Acha o par de linhas quase-paralelas mais proximo do rotulo (2 faces da
-    parede). separacao_min exige 2 tracos DIFERENTES (nao a mesma linha
-    duplicada). Retorna (angulo_graus, ok)."""
+def _dist_ponto_segmento(px, py, s):
+    """Distancia PERPENDICULAR do ponto (px,py) ao SEGMENTO s (nao ao ponto
+    medio). Uma parede longa que passa colada na porta tem essa distancia
+    pequena mesmo com o ponto medio longe - era o bug de 2026-07-21 (as PJ
+    saiam orientadas pela parede/cota errada porque o ranking usava a distancia
+    ao ponto medio)."""
+    x0, y0 = s['p0']; x1, y1 = s['p1']
+    dx, dy = x1 - x0, y1 - y0
+    L2 = dx*dx + dy*dy
+    if L2 < 1e-9:
+        return np.hypot(px - x0, py - y0)
+    t = max(0.0, min(1.0, ((px - x0)*dx + (py - y0)*dy) / L2))
+    return np.hypot(px - (x0 + t*dx), py - (y0 + t*dy))
+
+
+def _achar_angulo_parede(lx, ly, segs, raio=90.0, separacao_min=3.0, separacao_max=45.0,
+                         dif_ang_max=8.0, comp_min=30.0):
+    """Angulo da PAREDE em que a porta de correr esta embutida, pra orientar o
+    vao sintetico reto (ver extrair_vaos_correr). Retorna (angulo_graus, ok).
+
+    FIX 2026-07-21 (achado do Pedro: PJ3/PJ5/PJ6/PJ10 saiam em angulos errados):
+    (1) rankeia por distancia PERPENDICULAR do rotulo ao segmento (nao ao ponto
+        medio) - a parede certa e' a que a LINHA passa mais perto do rotulo;
+    (2) descarta segmentos curtos (< comp_min) - paredes sao longas; batentes,
+        cotas curtas e icones sao curtos e enganavam o ranking;
+    (3) fallback: se nao achar um PAR de faces paralelas (parede so tem uma face
+        detectada no vao da porta), usa a face longa mais proxima.
+    """
     candidatos = []
     for s in segs:
-        mx, my = (s['p0'][0]+s['p1'][0])/2, (s['p0'][1]+s['p1'][1])/2
-        dist = np.hypot(mx-lx, my-ly)
-        if dist > raio:
+        if s['comprimento'] < comp_min:
             continue
+        d = _dist_ponto_segmento(lx, ly, s)
+        if d > raio:
+            continue
+        mx, my = (s['p0'][0]+s['p1'][0])/2, (s['p0'][1]+s['p1'][1])/2
         ang = np.degrees(np.arctan2(s['p1'][1]-s['p0'][1], s['p1'][0]-s['p0'][0])) % 180
-        candidatos.append(dict(s, dist=dist, ang=ang, mx=mx, my=my))
+        candidatos.append(dict(s, dist=d, ang=ang, mx=mx, my=my))
+    if not candidatos:
+        return None, False
     candidatos.sort(key=lambda c: c['dist'])
 
+    # 1a escolha: par de faces quase-paralelas (parede), o par mais PERTO
+    # (perpendicular) do rotulo - nao mais o de menor separacao.
     melhor = None
     for i in range(len(candidatos)):
         for j in range(i+1, len(candidatos)):
@@ -172,11 +202,14 @@ def _achar_angulo_parede(lx, ly, segs, raio=150.0, separacao_min=3.0, separacao_
             sep = np.hypot(a['mx']-b['mx'], a['my']-b['my'])
             if sep < separacao_min or sep > separacao_max:
                 continue
-            if melhor is None or sep < melhor[3]:
-                melhor = (a, b, dif_ang, sep)
-    if melhor is None:
-        return None, False
-    return melhor[0]['ang'], True
+            prox = min(a['dist'], b['dist'])   # quao perto o rotulo esta DESSA parede
+            if melhor is None or prox < melhor[1]:
+                melhor = (a['ang'], prox)
+    if melhor is not None:
+        return melhor[0], True
+
+    # fallback: sem par -> a face longa mais proxima (perpendicular) do rotulo
+    return candidatos[0]['ang'], True
 
 
 def extrair_vaos_correr(page, vaos_arco, labels, W, H, limite_x):

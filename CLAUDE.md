@@ -825,6 +825,23 @@ real (não só lidos/revisados) — resultado numérico ao lado.
       o gate NÃO rejeita casos limpos (sem vistoria limpa com geometria de arco
       em mãos pra testar - o `planta_passagens.json` só tinha centros).
 
+25. **Orientação das portas de correr (PJ) saía errada (achado do Pedro,
+    2026-07-21).** Sobre a planta P073, várias PJ (PJ3/PJ5/PJ6/PJ10) apareciam
+    espetando pro meio dos cômodos em ângulos aleatórios (PJ6 em 67°) em vez de
+    deitadas na parede. Causa em `_achar_angulo_parede()` (extrair_portas.py):
+    o ranking da parede usava a distância do rótulo até o **ponto médio** do
+    segmento - uma parede longa que passa colada na porta tem o ponto médio
+    longe, então uma cota curta ou parede perpendicular ganhava. Fix: (a)
+    distância **perpendicular** rótulo→segmento (`_dist_ponto_segmento`); (b)
+    descarta segmentos curtos (< 30pt - paredes são longas, batentes/cotas
+    curtos enganavam); (c) fallback de face única quando não há par de faces
+    paralelas. **Validado visualmente em 2 plantas** (PNG das portas sobre o
+    PDF): P073 (12 PJ - "melhorou muito") e P070 (2 PJ corretas, convenção de
+    nome P8/P9 diferente), sem regressão nas portas de giro (que usam o
+    detector de arco, não tocado). Só afeta PJ/correr. Melhora ~12/43 portas da
+    P073 - reduz ruído na calibração por portas, mas NÃO resolve a ambiguidade
+    de heading do item 24 (essa é deriva do SLAM).
+
 ## Pendências conhecidas (não resolvidas)
 
 - Confirmar no navegador os marcadores de foto do `commit13` (planta e fita

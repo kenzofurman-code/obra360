@@ -1,21 +1,24 @@
-node_modules
-dist
-.env
-.env.local
-.DS_Store
-
-.vercel
-
-# Credenciais sensíveis (nunca commitar)
-serviceAccountKey.json
-*.pem
-*.key
 
 # Artefatos locais do pipeline Python (não fazem parte do produto)
-__pycache__/
+# Credenciais sensíveis (nunca commitar)
+*.key
+*.pdf
+*.pem
 *.pyc
-tmp_slam_*/
-
-vaos.json
-trajetoria_bruta.json
+.DS_Store
+.env
+.env.local
+.vercel
+__pycache__/
+dist
 frame_trajectory_vps.txt
+node_modules
+overlay_*.png
+overlay_calib_*.png
+portas_P070_*.png
+portas_sobre_planta_*.png
+recorte2.jpg
+serviceAccountKey.json
+tmp_slam_*/
+trajetoria_bruta.json
+vaos.json
