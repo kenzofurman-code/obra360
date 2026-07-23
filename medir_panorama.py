@@ -281,19 +281,93 @@ def medir_ponto_robusto(keyframe, u, v, landmarks_pos,
                  tentativas=tentativas, motivo=None)
 
 
-def medir_por_epipolar_fallback(*args, **kwargs):
+def _ncc(a_gray, b_gray):
+    """Correlacao cruzada normalizada entre dois recortes de mesmo tamanho
+    (invariante a brilho/contraste linear). Retorna [-1, 1]; -1 se degenerado."""
+    a = a_gray.astype(np.float32).ravel()
+    b = b_gray.astype(np.float32).ravel()
+    a = a - a.mean(); b = b - b.mean()
+    na = float(np.linalg.norm(a)); nb = float(np.linalg.norm(b))
+    if na < 1e-6 or nb < 1e-6:
+        return -1.0
+    return float(np.dot(a, b) / (na * nb))
+
+
+def _reprojetar_ponto(keyframe, P):
+    """(u, v, dist) de UM ponto 3D no equiretangular do keyframe (mesmo que
+    reprojetar_landmarks, versao escalar)."""
+    u, v, d = reprojetar_landmarks(keyframe, P.reshape(1, 3))
+    return float(u[0]), float(v[0]), float(d[0])
+
+
+def medir_por_epipolar_fallback(kf1, u, v, img1, kf2, img2,
+                                d_min=0.3, d_max=25.0, n_amostras=100,
+                                fov_graus=50.0, tam_crop=112,
+                                ncc_min=0.45, refino=True):
     """
-    Fallback para quando a regiao clicada nao tem landmarks suficientes perto
-    do raio (parede lisa / pouca textura). Ideia (NAO implementada ainda):
-    localizar o mesmo ponto no keyframe equiretangular vizinho por matching
-    de features + restricao de linha epipolar entre os 2 keyframes, depois
-    triangular normalmente. Ver backlog item 3 do handoff.
+    Fallback fotometrico pra quando a regiao clicada NAO tem landmarks perto do
+    raio (parede lisa / textura nao mapeada pelo SLAM). Em vez de landmarks, casa
+    a APARENCIA entre 2 fotos equiretangulares por busca de profundidade ao longo
+    do raio do clique (plane-sweep):
+
+      1. raio = raio_do_clique(kf1, u, v);
+      2. template = recorte PINHOLE de img1 centrado em (u,v);
+      3. pra cada profundidade D candidata (d_min..d_max, n_amostras log-spaced):
+         P = origem + dir*D -> reprojeta P em kf2 -> recorte de img2 no (u2,v2) ->
+         NCC contra o template;
+      4. D de melhor NCC -> ponto 3D. Se refino, sub-amostra em torno do melhor.
+
+    kf1/kf2: poses no frame do mapa (pose_no_frame_do_mapa). img1/img2: as 2 fotos
+    equiret (BGR, mesmo tamanho nativo). kf2/img2 = quadro vizinho com baseline
+    suficiente e sobreposicao com o clique.
+
+    Retorna dict {sucesso, ponto3d, confianca, ncc, profundidade, motivo} - mesmo
+    espirito de medir_por_reprojecao (ponto3d = origem + dir*profundidade).
     """
-    raise NotImplementedError(
-        "Fallback por curva epipolar ainda nao implementado. "
-        "Poucos landmarks perto do clique - tente clicar mais perto de uma "
-        "quina, moveis ou textura visivel, ou aumente --dist-max/--k-max/--t-max."
-    )
+    # imports LAZY: so' o fallback fotometrico precisa de cv2/recorte pinhole - o
+    # caminho normal (landmarks) nao carrega essas dependencias.
+    import cv2
+    from equirect_perspectiva import recortar_perspectiva
+    origem, direcao = raio_do_clique(kf1, u, v)
+    tpl_bgr, _ = recortar_perspectiva(img1, u, v, fov_h_graus=fov_graus,
+                                      largura_saida=tam_crop)
+    tpl = cv2.cvtColor(tpl_bgr, cv2.COLOR_BGR2GRAY)
+
+    def score_em(D):
+        P = origem + direcao * D
+        u2, v2, d2 = _reprojetar_ponto(kf2, P)
+        if d2 <= 1e-3:
+            return -1.0
+        cand_bgr, _ = recortar_perspectiva(img2, u2, v2, fov_h_graus=fov_graus,
+                                           largura_saida=tam_crop)
+        return _ncc(tpl, cv2.cvtColor(cand_bgr, cv2.COLOR_BGR2GRAY))
+
+    # varredura grossa em profundidade LOG (parallax cai com a distancia, entao
+    # amostrar denso perto e esparso longe cobre melhor o alcance util)
+    ds = np.geomspace(d_min, d_max, n_amostras)
+    scores = np.array([score_em(float(D)) for D in ds])
+    i_best = int(np.argmax(scores))
+    melhor_ncc = float(scores[i_best])
+    melhor_D = float(ds[i_best])
+
+    if refino and melhor_ncc > 0:
+        # refino local: 21 amostras lineares entre os vizinhos do melhor
+        lo = ds[max(0, i_best - 1)]; hi = ds[min(len(ds) - 1, i_best + 1)]
+        for D in np.linspace(lo, hi, 21):
+            s = score_em(float(D))
+            if s > melhor_ncc:
+                melhor_ncc = s; melhor_D = float(D)
+
+    if melhor_ncc < ncc_min:
+        return dict(sucesso=False, ponto3d=None, confianca=None, ncc=melhor_ncc,
+                    profundidade=None,
+                    motivo=f"Melhor casamento entre as 2 fotos foi fraco (NCC={melhor_ncc:.2f} "
+                           f"< {ncc_min}) - a regiao clicada pode nao aparecer no quadro vizinho, "
+                           "estar sem textura, ou o baseline ser ruim. Tente outro par de quadros.")
+    ponto3d = origem + direcao * melhor_D
+    confianca = "alta" if melhor_ncc >= 0.7 else "baixa"
+    return dict(sucesso=True, ponto3d=ponto3d, confianca=confianca, ncc=melhor_ncc,
+                profundidade=melhor_D, motivo=None, origem=origem, direcao=direcao)
 
 
 # ─── Fixes 2026-07-17 (item 21 do CLAUDE.md) ───────────────────────────────────────
