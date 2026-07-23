@@ -302,10 +302,22 @@ export default function PanoramaViewer({
 
     // (u,v) equiretangular -> ponto 3D na esfera (INVERSO exato de pegarUVDoClique,
     // pra os pontos cairem exatamente onde os cliques de medicao caem). r=470.
+    // AJUSTE AO VIVO (temporario) da convencao de UV entre a API e o desenho, via
+    // console - os pontos tem que sentar nas quinas/features da foto:
+    //   window.__LM_FLIP_U = true   (espelha horizontal)
+    //   window.__LM_FLIP_V = true   (espelha vertical/altura)
+    //   window.__LM_OFF_U  = 0.5    (desloca em longitude, fracao de volta 0..1)
+    // depois de mudar, chame window.__LM_REDRAW() (nao precisa rebuscar a API).
     const uvParaPonto = (u, v, r = 470) => {
-      const lon = 2 * Math.PI * u
-      const sv = Math.sin(Math.PI * v)
-      return [r * Math.cos(lon) * sv, -r * Math.cos(Math.PI * v), r * Math.sin(lon) * sv]
+      let uu = u, vv = v
+      if (typeof window !== 'undefined') {
+        if (window.__LM_FLIP_U) uu = 1 - uu
+        if (window.__LM_FLIP_V) vv = 1 - vv
+        if (window.__LM_OFF_U) uu = ((uu + window.__LM_OFF_U) % 1 + 1) % 1
+      }
+      const lon = 2 * Math.PI * uu
+      const sv = Math.sin(Math.PI * vv)
+      return [r * Math.cos(lon) * sv, -r * Math.cos(Math.PI * vv), r * Math.sin(lon) * sv]
     }
 
     const textureLoader = new THREE.TextureLoader()
@@ -405,6 +417,20 @@ export default function PanoramaViewer({
     // Overlay de landmarks (frente 1): busca /landmarks_frame do quadro atual e
     // desenha os pontos na foto. So' roda com o toggle ligado + mapaUrl/apiUrl.
     let landmarksReqId = 0
+    let ultimosPontosLandmarks = [] // cache pro ajuste ao vivo (window.__LM_REDRAW)
+    const redesenharLandmarks = () => {
+      const pts = ultimosPontosLandmarks
+      const pos = new Float32Array(pts.length * 3)
+      for (let i = 0; i < pts.length; i++) {
+        const [x, y, z] = uvParaPonto(pts[i].u, pts[i].v)
+        pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z
+      }
+      landmarksGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+      landmarksGeo.attributes.position.needsUpdate = true
+      landmarksGeo.computeBoundingSphere()
+      landmarksObj.visible = pts.length > 0
+    }
+    if (typeof window !== 'undefined') window.__LM_REDRAW = redesenharLandmarks
     const atualizarLandmarks = () => {
       const q = quadrosRef.current[indiceAtualExibido]
       const apiUrl = apiMedicaoUrlRef.current
@@ -423,16 +449,8 @@ export default function PanoramaViewer({
         .then((r) => r.json())
         .then((json) => {
           if (!active || reqId !== landmarksReqId || !mostrarLandmarksRef.current) return
-          const pts = json?.pontos || []
-          const pos = new Float32Array(pts.length * 3)
-          for (let i = 0; i < pts.length; i++) {
-            const [x, y, z] = uvParaPonto(pts[i].u, pts[i].v)
-            pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z
-          }
-          landmarksGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
-          landmarksGeo.attributes.position.needsUpdate = true
-          landmarksGeo.computeBoundingSphere()
-          landmarksObj.visible = true
+          ultimosPontosLandmarks = json?.pontos || []
+          redesenharLandmarks()
         })
         .catch(() => { /* silencioso - overlay e' so' um guia visual */ })
     }
@@ -927,6 +945,9 @@ export default function PanoramaViewer({
       landmarksGeo.dispose()
       landmarksMat.dispose()
       atualizarLandmarksRef.current = () => {}
+      if (typeof window !== 'undefined' && window.__LM_REDRAW === redesenharLandmarks) {
+        window.__LM_REDRAW = undefined
+      }
       if (hoverMesh) {
         hoverMesh.geometry.dispose()
         hoverMesh.material.dispose()
