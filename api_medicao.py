@@ -60,6 +60,7 @@ from flask_cors import CORS
 from medir_panorama import (carregar_mapa, medir_ponto_robusto, calibrar_escala,
                              medir_por_reprojecao, pose_no_frame_do_mapa,
                              medir_vao_coplanar, reprojetar_landmarks)
+from calibrar_altura_camera import calibrar_por_altura_camera_robusto
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache_mapas')
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -205,6 +206,114 @@ def medir():
     if escala:
         resposta['distancia_m'] = dist_slam * float(escala)
     return jsonify(resposta)
+
+
+@app.route('/comparar', methods=['POST'])
+def comparar():
+    """Modo PESQUISA (ambiente de teste): mede UM par de cliques por VARIOS
+    metodos e aplica VARIAS calibracoes, devolvendo uma MATRIZ metodo x
+    calibracao em metros + erro vs trena. Serve pra ver o que varia entre os
+    metodos e separar a fonte do erro (medicao vs calibracao).
+
+    Body: {mapa_url, pontos:[{u,v,t} x2], escala_clique?, altura_camera_m=2.0,
+    trena_m?}. escala_clique vem de uma calibracao por clique-livre feita antes
+    (/calibrar). As calibracoes automaticas (altura da camera) rodam aqui.
+    """
+    erro_auth = _checar_api_key()
+    if erro_auth:
+        return erro_auth
+    body = request.get_json(force=True) or {}
+    mapa_url = body.get('mapa_url')
+    pontos = body.get('pontos')
+    if not mapa_url or not pontos or len(pontos) != 2:
+        return jsonify(erro="Informe mapa_url e exatamente 2 pontos."), 400
+    altura_camera_m = float(body.get('altura_camera_m', 2.0))
+    escala_clique = body.get('escala_clique')
+    trena_m = body.get('trena_m')
+    t0 = time.time()
+    try:
+        keyframes, landmarks_pos = _baixar_mapa(mapa_url)
+    except Exception as e:
+        return jsonify(erro=f"Falha ao carregar mapa: {e}"), 500
+
+    kfs = []
+    for p in pontos:
+        if p.get('t') is None:
+            return jsonify(erro="Cada ponto precisa de 't' (tempo do quadro)."), 400
+        kf = pose_no_frame_do_mapa(keyframes, float(p['t']))
+        if kf is None:
+            return jsonify(erro=f"Sem keyframe do mapa perto de t={p['t']}s."), 200
+        kfs.append(kf)
+
+    # ── MEDICOES (distancia em unidades SLAM) ──
+    medicoes = {}
+    r1 = medir_por_reprojecao(kfs[0], pontos[0]['u'], pontos[0]['v'], landmarks_pos)
+    r2 = medir_por_reprojecao(kfs[1], pontos[1]['u'], pontos[1]['v'], landmarks_pos)
+    if r1['sucesso'] and r2['sucesso']:
+        medicoes['reprojecao'] = {'dist_slam': float(np.linalg.norm(r1['ponto3d'] - r2['ponto3d'])),
+                                  'confianca': [r1['confianca'], r2['confianca']]}
+        cop = medir_vao_coplanar(r1, r2)
+        if cop.get('aplicavel'):
+            medicoes['coplanar'] = {'dist_slam': float(cop['distancia_slam']), 'confianca': 'coplanar'}
+        else:
+            medicoes['coplanar'] = {'erro': 'coplanar nao aplicavel (profundidades muito diferentes)'}
+    else:
+        medicoes['reprojecao'] = {'erro': '; '.join(r['motivo'] for r in (r1, r2) if not r['sucesso'])}
+        medicoes['coplanar'] = {'erro': 'depende da reprojecao'}
+    try:
+        b1 = medir_ponto_robusto(kfs[0], pontos[0]['u'], pontos[0]['v'], landmarks_pos)
+        b2 = medir_ponto_robusto(kfs[1], pontos[1]['u'], pontos[1]['v'], landmarks_pos)
+        if b1['sucesso'] and b2['sucesso']:
+            medicoes['robusto'] = {'dist_slam': float(np.linalg.norm(b1['ponto3d'] - b2['ponto3d'])),
+                                   'confianca': [b1['confianca'], b2['confianca']]}
+        else:
+            medicoes['robusto'] = {'erro': '; '.join(x['motivo'] for x in (b1, b2) if not x['sucesso'])}
+    except Exception as e:
+        medicoes['robusto'] = {'erro': str(e)}
+
+    # ── CALIBRACOES (escala metros/unid SLAM) ──
+    calibracoes = {}
+    nome_cache = hashlib.sha1(mapa_url.encode('utf-8')).hexdigest() + '.msg'
+    caminho_cache = os.path.join(CACHE_DIR, nome_cache)
+    try:
+        ca = calibrar_por_altura_camera_robusto(caminho_cache, altura_camera_m)
+        calibracoes['altura_camera'] = {'escala': ca.get('escala_slam_metros'),
+                                        'sucesso': ca.get('sucesso'),
+                                        'dispersao_pct': ca.get('dispersao_pct'),
+                                        'motivo': ca.get('motivo')}
+    except Exception as e:
+        calibracoes['altura_camera'] = {'escala': None, 'erro': str(e)}
+    if escala_clique:
+        calibracoes['clique'] = {'escala': float(escala_clique), 'sucesso': True}
+
+    # ── MATRIZ metodo x calibracao (em metros) + erro vs trena ──
+    linhas = []
+    for mnome, m in medicoes.items():
+        cel = {'metodo': mnome, 'confianca': m.get('confianca')}
+        if 'dist_slam' in m:
+            cel['dist_slam'] = round(m['dist_slam'], 4)
+            cel['metros'] = {}
+            for cnome, c in calibracoes.items():
+                esc = c.get('escala')
+                if esc:
+                    metros = m['dist_slam'] * float(esc)
+                    entrada = {'valor': round(metros, 3)}
+                    if trena_m:
+                        entrada['erro_pct'] = round(abs(metros - float(trena_m)) / float(trena_m) * 100, 1)
+                    cel['metros'][cnome] = entrada
+                else:
+                    cel['metros'][cnome] = {'valor': None}
+        else:
+            cel['erro'] = m.get('erro')
+        linhas.append(cel)
+
+    resumo_calib = {}
+    for k, v in calibracoes.items():
+        resumo_calib[k] = {'escala': (round(v['escala'], 5) if v.get('escala') else None),
+                           'sucesso': v.get('sucesso'), 'motivo': v.get('motivo'),
+                           'dispersao_pct': v.get('dispersao_pct')}
+    return jsonify(sucesso=True, matriz=linhas, calibracoes=resumo_calib,
+                   trena_m=trena_m, tempo_s=round(time.time() - t0, 2))
 
 
 @app.route('/calibrar', methods=['POST'])
