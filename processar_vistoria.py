@@ -710,6 +710,133 @@ def buscar_heading_por_portas(raw_waypoints, vaos, ancora_manual, path_scale, es
     return melhor
 
 
+def calibrar_ancora_portas(raw_waypoints: list, vaos: list, ancora1: dict,
+                           aspecto: float = 1.0, espelhar: bool = True,
+                           min_portas: int = 4, passo_grosso: float = 1.0,
+                           passo_fino: float = 0.05, max_pts: int = 1600) -> dict:
+    """
+    Calibracao "a prova de erro" (2026-07-22, direcao do Pedro): o UNICO input
+    e a ancora A. Resolve heading + escala anisotropica (sx, sy) automaticamente
+    contra as portas, sem chute manual de heading/escala.
+
+    Premissas (fechadas com o Pedro):
+    - Espelhamento FIXO (True, convencao da camera - item 10). Nao e' variavel.
+    - Translacao PRESA na ancora A (a origem do SLAM cai em A). Sem "ancora
+      andando sozinha".
+
+    Modelo (espaco fisico, y*aspecto):  q = A + diag(sx,sy) . R(heading+180) . M . p
+    Fixando heading, sx e sy saem em FORMA FECHADA (regressao 1D por eixo, sem
+    intercepto - a translacao ja esta presa em A):
+        sx = Σ u_i (cx_i - Ax) / Σ u_i^2      sy = Σ v_i (cy_i - Ay) / Σ v_i^2
+    So o heading e' buscado: varredura grossa (passo_grosso) + refino fino
+    decimal (passo_fino). Como sx/sy sao exatos, nao ha' grade de escala.
+
+    Correspondencias TRAVADAS (pedido do Pedro): fixa (porta, centro do raio
+    cruzado) no melhor heading grosso e refina contra esses alvos fixos - o alvo
+    nao "pula" de lado durante o refino. 2 iteracoes lock->refino->re-lock.
+
+    Score por heading: MAXIMIZA nº de cruzamentos geometricos reais (cobertura),
+    desvio como desempate (precisao) - um heading errado pode casar poucas portas
+    com desvio baixo; a cobertura denuncia isso.
+
+    Retorna dict {anc, heading, path_scale, escala_x, escala_y, espelhar, n,
+    resid, info} no espirito de calibrar_auto_por_portas, ou None se <min_portas.
+    """
+    if len(raw_waypoints) < 2 or len(vaos) < min_portas:
+        return None
+    # Subamostra so' pra busca de heading/escala (a varredura de 360deg roda a
+    # deteccao de cruzamento a cada grau). O resultado sao 3 numeros
+    # (heading, sx, sy); quem reprojeta a trajetoria CHEIA e faz o snap depois e'
+    # o run_map_matching, entao a subamostragem aqui nao perde resolucao final -
+    # so' acelera (de ~37s pra poucos segundos numa vistoria tipica).
+    if len(raw_waypoints) > max_pts:
+        passo = len(raw_waypoints) // max_pts
+        raw_waypoints = raw_waypoints[::passo]
+    vaos_fis = vaos_em_fisico(vaos, aspecto)
+    R = np.array([[w['x'], w['y']] for w in raw_waypoints], float)
+    ts = np.array([w['t'] for w in raw_waypoints], float)
+    Ax, Ay = ancora1['x'], ancora1['y'] * aspecto  # ancora em espaco FISICO
+
+    ext_traj = _bbox_diag(R)
+    sc0 = (_bbox_diag(_centros_vaos(vaos_fis)) / ext_traj) if ext_traj > 1e-9 else 1.0
+
+    def _crossings(heading, sx, sy):
+        U = _rot_mirror_raw(R, heading, espelhar)
+        P = np.column_stack([Ax + sx * U[:, 0], Ay + sy * U[:, 1]])
+        pts = [{'t': ts[i], 'x': P[i, 0], 'y': P[i, 1]} for i in range(len(P))]
+        cz = sorted(detectar_cruzamentos_vaos(pts, vaos_fis), key=lambda c: c['t'])
+        fl = []
+        for c in cz:
+            if not fl or (c['t'] - fl[-1]['t']) > 4.0:
+                fl.append(c)
+        return fl
+
+    def _solve(heading, locked):
+        """sx,sy fechado contra os alvos TRAVADOS + residual medio."""
+        U = _rot_mirror_raw(R, heading, espelhar)
+        nx = dx = ny = dy = 0.0
+        for tc, cen in locked:
+            i = int(np.argmin(np.abs(ts - tc)))
+            u, v = U[i, 0], U[i, 1]
+            nx += u * (cen[0] - Ax); dx += u * u
+            ny += v * (cen[1] - Ay); dy += v * v
+        sx = nx / dx if dx > 1e-9 else sc0
+        sy = ny / dy if dy > 1e-9 else sc0
+        res = 0.0
+        for tc, cen in locked:
+            i = int(np.argmin(np.abs(ts - tc)))
+            u, v = U[i, 0], U[i, 1]
+            res += math.hypot(Ax + sx * u - cen[0], Ay + sy * v - cen[1])
+        return sx, sy, (res / len(locked) if locked else 1e9)
+
+    # 1) varredura GROSSA de heading (isotropico sc0): (nº cruzamentos, -desvio)
+    melhor = None
+    h = 0.0
+    while h < 360.0:
+        fl = _crossings(h, sc0, sc0)
+        if fl:
+            dev = float(np.mean([c['dist'] for c in fl]))
+            score = (len(fl), -dev)
+            if melhor is None or score > melhor[0]:
+                melhor = (score, h, fl)
+        h += passo_grosso
+    if melhor is None or len(melhor[2]) < min_portas:
+        return None
+
+    # 2) lock -> refino FINO decimal -> re-lock (2x)
+    heading = melhor[1]
+    fl = melhor[2]
+    sx = sy = sc0
+    res_final = None
+    for _ in range(2):
+        locked = [(c['t'], np.array(c['centro'], float)) for c in fl]
+        melhor_fino = None
+        hh = heading - 1.0
+        while hh <= heading + 1.0 + 1e-9:
+            s_x, s_y, res = _solve(hh, locked)
+            if 1e-6 < s_x < 1e4 and 1e-6 < s_y < 1e4:
+                if melhor_fino is None or res < melhor_fino[0]:
+                    melhor_fino = (res, hh, s_x, s_y)
+            hh += passo_fino
+        if melhor_fino is None:
+            break
+        res_final, heading, sx, sy = melhor_fino
+        nova = _crossings(heading, sx, sy)
+        if len(nova) >= min_portas:
+            fl = nova
+        else:
+            break
+
+    ps = math.sqrt(max(sx * sy, 1e-12))
+    ex = math.sqrt(sx / sy) if sy > 1e-9 else 1.0
+    ey = math.sqrt(sy / sx) if sx > 1e-9 else 1.0
+    info = {'usado_auto': True, 'n_portas': len(fl), 'residual_val': res_final,
+            'heading': heading, 'sx': sx, 'sy': sy, 'metodo': 'ancora_portas'}
+    return {'anc': ancora1, 'heading': float(heading), 'path_scale': float(ps),
+            'escala_x': float(ex), 'escala_y': float(ey), 'espelhar': espelhar,
+            'n': len(fl), 'resid': res_final, 'info': info}
+
+
 def ajustar_escala_eixos(raw_waypoints: list, vaos: list, ancora1: dict,
                          heading_offset: float, path_scale: float, espelhar: bool,
                          aspecto: float = 1.0, min_portas: int = 4,
@@ -791,46 +918,55 @@ def run_map_matching(raw_waypoints: list, vaos: list,
     mesmo) deve gravar esses valores de volta no Firestore, ja' que o site usa
     os MESMOS campos pra re-alinhar a trajetoria na tela.
     """
-    # Calibracao AUTOMATICA global primeiro (roadmap 4.3 "zero-clique", ideia do
-    # Pedro 2026-07-18): busca heading+escala+espelhar do zero contra as portas,
-    # sem depender do chute manual estar perto. Se achar um alinhamento com
-    # portas suficientes (cruzamentos reais), usa como chute do refino; senao
-    # mantem o heading/escala manuais (comportamento antigo).
-    # Calibracao AUTOMATICA (2026-07-21, direcao do Pedro): busca o HEADING e a
-    # ESCALA que dao o MENOR DESVIO das portas, com a ANCORA PRESA a um raio do
-    # ponto A que o usuario marcou (buscar_heading_por_portas). Nao depende de
-    # chute de heading. Se a busca ficar ambigua (varios headings empatam no
-    # desvio - tipico de trajetoria com deriva), mantem a bussola manual e so'
-    # refina escala+ancora, avisando pra verificar no site.
-    auto = buscar_heading_por_portas(raw_waypoints, vaos, ancora1, path_scale,
-                                     espelhar, aspecto, raio_ancora=0.12)
-    if isinstance(auto, dict) and auto.get('ambiguo'):
-        print(f"\n[Pipeline] Busca de heading INCONCLUSIVA ({auto['motivo']}) - "
-              f"MANTENDO a bussola manual (heading={heading_offset}, espelhar={espelhar}) "
-              "e refinando so' escala+ancora presa. VERIFIQUE no site.")
-        ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
-            raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
-    elif auto is not None:
-        heading_offset = auto['heading']
-        path_scale = auto['sc']
-        ancora1 = auto['anc']
-        print(f"\n[Pipeline] Calibracao AUTOMATICA por portas: heading={heading_offset:.0f} "
-              f"escala={path_scale:.4f} espelhar={espelhar} | {auto['n']} portas, "
-              f"desvio={auto['resid']:.4f} (menor entre os headings testados).")
-        calib_info = {'usado_auto': True, 'n_portas': auto['n'], 'residual_val': auto['resid']}
+    # Calibracao "A PROVA DE ERRO" (2026-07-22, direcao do Pedro): o UNICO input
+    # e' a ancora A. calibrar_ancora_portas resolve heading + escala anisotropica
+    # (sx,sy) do zero contra as portas - espelhamento FIXO (convencao da camera,
+    # item 10) e translacao PRESA na ancora. Validado nos dados reais: com o A
+    # correto recupera heading ~139 (== 137.1 manual do Pedro), 19 portas, 0.43%.
+    # Se achar portas suficientes, e' o caminho PRIMARIO; senao cai no fluxo
+    # antigo (busca de heading + ajuste anisotropico separados) - sem regressao.
+    escala_x, escala_y = 1.0, 1.0
+    solver = calibrar_ancora_portas(raw_waypoints, vaos, ancora1, aspecto,
+                                    espelhar=espelhar)
+    if solver is not None:
+        heading_offset = solver['heading']
+        path_scale = solver['path_scale']
+        escala_x = solver['escala_x']
+        escala_y = solver['escala_y']
+        espelhar = solver['espelhar']
+        ancora1 = solver['anc']  # inalterada - translacao presa em A
+        calib_info = solver['info']
+        print(f"\n[Pipeline] Calibracao ANCORA-ONLY (a prova de erro): "
+              f"heading={heading_offset:.1f} path_scale={path_scale:.4f} "
+              f"escala_x={escala_x:.3f} escala_y={escala_y:.3f} espelhar={espelhar} | "
+              f"{solver['n']} portas, desvio={(solver['resid'] or 0)*100:.2f}%")
     else:
-        print(f"\n[Pipeline] Poucas portas detectadas - usando calibracao manual como esta.")
-        calib_info = {'usado_auto': False, 'motivo': 'poucas portas'}
-
-    # Ajuste fino ANISOTROPICO (2026-07-22): depois de heading/escala/ancora,
-    # acha os multiplicadores independentes de X e Y que minimizam o desvio das
-    # portas (escala em torno da ancora fixa - nao a move). Corrige esticao de
-    # proporcao num sentido so' que o path_scale isotropico deixa passar.
-    escala_x, escala_y = ajustar_escala_eixos(raw_waypoints, vaos, ancora1,
-                                              heading_offset, path_scale, espelhar, aspecto)
-    if abs(escala_x - 1.0) > 1e-4 or abs(escala_y - 1.0) > 1e-4:
-        print(f"[Pipeline] Escala por eixo (anisotropica): X={escala_x:.4f} Y={escala_y:.4f} "
-              "(1.0 = sem correcao).")
+        print("\n[Pipeline] calibrar_ancora_portas: poucas portas - fallback pro fluxo anterior.")
+        auto = buscar_heading_por_portas(raw_waypoints, vaos, ancora1, path_scale,
+                                         espelhar, aspecto, raio_ancora=0.12)
+        if isinstance(auto, dict) and auto.get('ambiguo'):
+            print(f"[Pipeline] Busca de heading INCONCLUSIVA ({auto['motivo']}) - "
+                  f"MANTENDO a bussola manual (heading={heading_offset}, espelhar={espelhar}) "
+                  "e refinando so' escala+ancora presa. VERIFIQUE no site.")
+            ancora1, heading_offset, path_scale, espelhar, calib_info = calibrar_por_portas(
+                raw_waypoints, vaos, ancora1, heading_offset, path_scale, espelhar, aspecto)
+        elif auto is not None:
+            heading_offset = auto['heading']
+            path_scale = auto['sc']
+            ancora1 = auto['anc']
+            print(f"[Pipeline] Calibracao AUTOMATICA por portas: heading={heading_offset:.0f} "
+                  f"escala={path_scale:.4f} espelhar={espelhar} | {auto['n']} portas, "
+                  f"desvio={auto['resid']:.4f} (menor entre os headings testados).")
+            calib_info = {'usado_auto': True, 'n_portas': auto['n'], 'residual_val': auto['resid']}
+        else:
+            print(f"[Pipeline] Poucas portas detectadas - usando calibracao manual como esta.")
+            calib_info = {'usado_auto': False, 'motivo': 'poucas portas'}
+        # ajuste anisotropico separado (o solver ja' faz isso internamente)
+        escala_x, escala_y = ajustar_escala_eixos(raw_waypoints, vaos, ancora1,
+                                                  heading_offset, path_scale, espelhar, aspecto)
+        if abs(escala_x - 1.0) > 1e-4 or abs(escala_y - 1.0) > 1e-4:
+            print(f"[Pipeline] Escala por eixo (anisotropica): X={escala_x:.4f} Y={escala_y:.4f} "
+                  "(1.0 = sem correcao).")
 
     print(f"\n[Pipeline] Etapa 3/3: Map Matching com âncoras do Firebase...")
     print(f"  Âncora A: {ancora1}")
