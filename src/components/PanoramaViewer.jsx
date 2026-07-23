@@ -146,6 +146,9 @@ export default function PanoramaViewer({
   // --- Medição (feature nova, 2026-07-16 - ver api_medicao.py) ---
   modoMedicao = false, // true = clique na foto marca pontos de medição em vez de nada
   modoCalibrar = false, // true = os 2 próximos pontos calibram a escala (precisa larguraCalibracaoM), em vez de medir direto
+  modoComparar = false, // true = os 2 próximos pontos vão pro /comparar (matriz metodo x calibracao) - modo pesquisa
+  trenaM = null, // medida real (m) da distância clicada, opcional - coluna de erro na matriz do /comparar
+  alturaCameraM = 2.0, // altura da câmera acima do piso (m) - calibração automática por altura no /comparar
   mapaUrl = null, // visita.mapa_url (mapa.msg no R2) - sem isso, medição fica indisponível
   apiMedicaoUrl = null, // base da API (ver api_medicao.py) - ex.: https://api.obra360.exemplo
   apiMedicaoKey = null, // valor de MEDICAO_API_KEY da API (header X-Api-Key); null = sem auth
@@ -170,6 +173,9 @@ export default function PanoramaViewer({
   const ribbonRotationRef = useRef(ribbonRotationOffset)
   const modoMedicaoRef = useRef(modoMedicao)
   const modoCalibrarRef = useRef(modoCalibrar)
+  const modoCompararRef = useRef(modoComparar)
+  const trenaMRef = useRef(trenaM)
+  const alturaCameraMRef = useRef(alturaCameraM)
   const mapaUrlRef = useRef(mapaUrl)
   const apiMedicaoUrlRef = useRef(apiMedicaoUrl)
   const apiMedicaoKeyRef = useRef(apiMedicaoKey)
@@ -206,6 +212,12 @@ export default function PanoramaViewer({
     modoCalibrarRef.current = modoCalibrar
     limparMedicaoRef.current()
   }, [modoCalibrar])
+  useEffect(() => {
+    modoCompararRef.current = modoComparar
+    limparMedicaoRef.current()
+  }, [modoComparar])
+  useEffect(() => { trenaMRef.current = trenaM }, [trenaM])
+  useEffect(() => { alturaCameraMRef.current = alturaCameraM }, [alturaCameraM])
   useEffect(() => {
     mostrarLandmarksRef.current = mostrarLandmarks
     atualizarLandmarksRef.current()  // liga/desliga o overlay no quadro atual
@@ -520,7 +532,7 @@ export default function PanoramaViewer({
       // Modo medição (ver bloco "Medição" abaixo) tem prioridade e é mutuamente
       // exclusivo com o pulo de frame por clique na fita - clicar medindo não
       // deve também pular de foto.
-      if (modoMedicaoRef.current || modoCalibrarRef.current) {
+      if (modoMedicaoRef.current || modoCalibrarRef.current || modoCompararRef.current) {
         if (totalDragDist < 6) tentarClicarMedicao(mouseClientX, mouseClientY)
         return
       }
@@ -653,6 +665,7 @@ export default function PanoramaViewer({
 
       const pontosParaEnviar = pontosMedicao
       const calibrando = modoCalibrarRef.current
+      const comparando = modoCompararRef.current
       limparPontosMedicao() // já reseta pro próximo par, mesmo antes da resposta da API chegar
 
       const apiUrl = apiMedicaoUrlRef.current
@@ -677,22 +690,27 @@ export default function PanoramaViewer({
       }
 
       const corpo = { mapa_url: mapaUrlAtual, pontos: pontosParaEnviar }
-      if (calibrando) {
+      if (comparando) {
+        if (escalaSlamMetrosRef.current) corpo.escala_clique = escalaSlamMetrosRef.current
+        if (trenaMRef.current) corpo.trena_m = trenaMRef.current
+        corpo.altura_camera_m = alturaCameraMRef.current || 2.0
+      } else if (calibrando) {
         corpo.largura_real_m = larguraCalibracaoMRef.current
       } else if (escalaSlamMetrosRef.current) {
         corpo.escala_slam_metros = escalaSlamMetrosRef.current
       }
 
+      const endpoint = comparando ? 'comparar' : (calibrando ? 'calibrar' : 'medir')
       const headers = { 'Content-Type': 'application/json' }
       if (apiMedicaoKeyRef.current) headers['X-Api-Key'] = apiMedicaoKeyRef.current
-      fetch(`${apiUrl}/${calibrando ? 'calibrar' : 'medir'}`, {
+      fetch(`${apiUrl}/${endpoint}`, {
         method: 'POST',
         headers,
         body: JSON.stringify(corpo),
       })
         .then((r) => r.json())
         .then((json) => {
-          if (onResultadoMedicaoRef.current) onResultadoMedicaoRef.current(json, { calibrando })
+          if (onResultadoMedicaoRef.current) onResultadoMedicaoRef.current(json, { calibrando, comparando })
         })
         .catch((e) => {
           if (onErroMedicaoRef.current) {

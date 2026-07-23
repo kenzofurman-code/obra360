@@ -74,6 +74,10 @@ export default function Visita() {
   const [modoCalibrar, setModoCalibrar] = useState(false)
   const [larguraCalibracaoInput, setLarguraCalibracaoInput] = useState('') // string controlada do input
   const [resultadoMedicaoAtual, setResultadoMedicaoAtual] = useState(null) // último resultado, pra exibir no painel
+  // Modo PESQUISA (comparar todos os métodos numa medição): ver /comparar na api_medicao.py
+  const [modoComparar, setModoComparar] = useState(false)
+  const [matrizComparar, setMatrizComparar] = useState(null) // resposta do /comparar (matriz metodo x calibracao)
+  const [trenaInput, setTrenaInput] = useState('') // medida real (m) opcional, pra coluna de erro
   // URL da API de medição (Flask, ver api_medicao.py) - roda na VPS (mesma do
   // worker.py --poll, ver obra360_hosting_decision). Configurar VITE_API_MEDICAO_URL
   // no .env do frontend (Vercel) apontando pra ela, ex.: http://<ip-vps>:8090 -
@@ -427,7 +431,16 @@ export default function Visita() {
 
   // Resposta de api_medicao.py (/medir ou /calibrar) - ver PanoramaViewer.jsx::
   // tentarClicarMedicao. calibrando indica qual dos dois endpoints foi chamado.
-  const onResultadoMedicao = useCallback(async (resultado, { calibrando }) => {
+  const onResultadoMedicao = useCallback(async (resultado, { calibrando, comparando }) => {
+    if (comparando) {
+      if (!resultado.sucesso) {
+        mostrarToast(`Comparar falhou: ${resultado.erro || resultado.motivo || 'erro'}`, 'erro')
+        setMatrizComparar(null)
+        return
+      }
+      setMatrizComparar(resultado)
+      return
+    }
     if (calibrando) {
       if (!resultado.sucesso) {
         mostrarToast(`Falha ao calibrar: ${resultado.motivo || 'medição inconsistente'}`, 'erro')
@@ -829,6 +842,8 @@ export default function Visita() {
               ribbonRotationOffset={ribbonRotation}
               modoMedicao={modoMedicao}
               modoCalibrar={modoCalibrar}
+              modoComparar={modoComparar}
+              trenaM={parseFloat(trenaInput.replace(',', '.')) || null}
               mapaUrl={visita.mapa_url || null}
               apiMedicaoUrl={apiMedicaoUrl}
               apiMedicaoKey={apiMedicaoKey}
@@ -966,6 +981,81 @@ export default function Visita() {
                   placeholder="ex.: 0.80"
                   className="w-full bg-concreto-800 border border-concreto-700 rounded px-2 py-1 text-[11px] font-mono text-aco-200 focus:outline-none focus:border-sinal-500"
                 />
+              </div>
+            )}
+
+            {/* Modo PESQUISA: comparar todos os métodos numa medição só */}
+            <button
+              onClick={() => { setModoComparar((c) => !c); setModoCalibrar(false) }}
+              className={`w-full py-1.5 rounded border font-mono text-[10px] transition-all ${
+                modoComparar
+                  ? 'bg-sinal-500 text-concreto-950 font-bold border-sinal-500'
+                  : 'bg-concreto-800 border-concreto-700 text-aco-400 hover:text-aco-200'
+              }`}
+              title="Modo pesquisa: mede os 2 cliques por vários métodos e calibrações de uma vez, pra comparar"
+            >
+              Comparar todos (pesquisa)
+            </button>
+
+            {modoComparar && (
+              <div className="space-y-1.5">
+                <span className="text-[10px] text-aco-300 font-mono block">Trena (m) da distância que vai clicar — opcional, mostra o erro</span>
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  value={trenaInput}
+                  onChange={(e) => setTrenaInput(e.target.value)}
+                  placeholder="ex.: 0.86"
+                  className="w-full bg-concreto-800 border border-concreto-700 rounded px-2 py-1 text-[11px] font-mono text-aco-200 focus:outline-none focus:border-sinal-500"
+                />
+                {matrizComparar && (
+                  <div className="border-t border-concreto-800 pt-2 overflow-x-auto">
+                    <table className="w-full text-[9px] font-mono border-collapse">
+                      <thead>
+                        <tr className="text-aco-400">
+                          <th className="text-left pr-1 pb-1">método</th>
+                          <th className="text-right px-1 pb-1">SLAM</th>
+                          {Object.keys(matrizComparar.calibracoes || {}).map((c) => (
+                            <th key={c} className="text-right px-1 pb-1">{c === 'altura_camera' ? 'altura' : c}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(matrizComparar.matriz || []).map((linha) => (
+                          <tr key={linha.metodo} className="border-t border-concreto-800/60">
+                            <td className="text-left pr-1 py-0.5 text-aco-300">{linha.metodo}</td>
+                            <td className="text-right px-1 py-0.5 text-aco-400">
+                              {linha.dist_slam != null ? linha.dist_slam.toFixed(3) : '—'}
+                            </td>
+                            {Object.keys(matrizComparar.calibracoes || {}).map((c) => {
+                              const cel = linha.metros?.[c]
+                              return (
+                                <td key={c} className="text-right px-1 py-0.5">
+                                  {cel?.valor != null ? (
+                                    <span className="text-aco-200">
+                                      {cel.valor.toFixed(2)}
+                                      {cel.erro_pct != null && (
+                                        <span className={cel.erro_pct <= 5 ? 'text-ok' : cel.erro_pct <= 15 ? 'text-amber-400' : 'text-alerta'}>
+                                          {' '}({cel.erro_pct}%)
+                                        </span>
+                                      )}
+                                    </span>
+                                  ) : (
+                                    <span className="text-aco-500">—</span>
+                                  )}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <p className="text-[8px] text-aco-500 mt-1 leading-normal">
+                      Valores em metros; (%) = erro vs trena. SLAM = distância bruta antes de calibrar.
+                      {matrizComparar.calibracoes?.altura_camera?.sucesso === false && ' Altura não confiável nesta vistoria.'}
+                    </p>
+                  </div>
+                )}
               </div>
             )}
 
