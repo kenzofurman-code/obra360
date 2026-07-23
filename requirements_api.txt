@@ -8,3 +8,6 @@ numpy
 scipy
 gunicorn
 boto3
+# opencv (cv2) - fallback epipolar (recorte pinhole + NCC) e download de imagem.
+# headless = sem deps de GUI, ideal pra servidor.
+opencv-python-headless

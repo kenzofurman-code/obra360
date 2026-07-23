@@ -14,7 +14,12 @@ FROM python:3.11-slim
 WORKDIR /app
 COPY requirements_api.txt .
 RUN pip install --no-cache-dir -r requirements_api.txt
-COPY medir_panorama.py api_medicao.py ./
+# Modulos que a API importa: medir_panorama (medicao/landmarks), api_medicao
+# (o app), calibrar_altura_camera (coluna altura do /comparar) e
+# equirect_perspectiva (recorte pinhole do fallback epipolar). Faltando um
+# desses, a coluna/linha correspondente do /comparar fica indisponivel (import
+# lazy, nao derruba a API) - mas pra FUNCIONAR precisa estar aqui.
+COPY medir_panorama.py api_medicao.py calibrar_altura_camera.py equirect_perspectiva.py ./
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8090
 CMD ["gunicorn", "--bind", "0.0.0.0:8090", "--workers", "1", "--threads", "4", "--timeout", "300", "api_medicao:app"]
