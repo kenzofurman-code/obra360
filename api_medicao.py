@@ -60,7 +60,9 @@ from flask_cors import CORS
 from medir_panorama import (carregar_mapa, medir_ponto_robusto, calibrar_escala,
                              medir_por_reprojecao, pose_no_frame_do_mapa,
                              medir_vao_coplanar, reprojetar_landmarks)
-from calibrar_altura_camera import calibrar_por_altura_camera_robusto
+# calibrar_altura_camera e' import LAZY (dentro de /comparar) - o container da API
+# pode nao ter esse .py (o build so' copia parte dos modulos); importar no topo
+# derrubava a API inteira no boot (ModuleNotFoundError). Ver comparar().
 
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cache_mapas')
 os.makedirs(CACHE_DIR, exist_ok=True)
@@ -324,6 +326,7 @@ def comparar():
     nome_cache = hashlib.sha1(mapa_url.encode('utf-8')).hexdigest() + '.msg'
     caminho_cache = os.path.join(CACHE_DIR, nome_cache)
     try:
+        from calibrar_altura_camera import calibrar_por_altura_camera_robusto
         ca = calibrar_por_altura_camera_robusto(caminho_cache, altura_camera_m)
         calibracoes['altura_camera'] = {'escala': ca.get('escala_slam_metros'),
                                         'sucesso': ca.get('sucesso'),
