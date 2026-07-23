@@ -285,6 +285,9 @@ def comparar():
         calibracoes['altura_camera'] = {'escala': None, 'erro': str(e)}
     if escala_clique:
         calibracoes['clique'] = {'escala': float(escala_clique), 'sucesso': True}
+    escala_portas = body.get('escala_portas')  # visita.escala_slam_metros_portas (planta metrica)
+    if escala_portas:
+        calibracoes['porta'] = {'escala': float(escala_portas), 'sucesso': True}
 
     # ── MATRIZ metodo x calibracao (em metros) + erro vs trena ──
     linhas = []

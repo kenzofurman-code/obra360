@@ -149,6 +149,7 @@ export default function PanoramaViewer({
   modoComparar = false, // true = os 2 próximos pontos vão pro /comparar (matriz metodo x calibracao) - modo pesquisa
   trenaM = null, // medida real (m) da distância clicada, opcional - coluna de erro na matriz do /comparar
   alturaCameraM = 2.0, // altura da câmera acima do piso (m) - calibração automática por altura no /comparar
+  escalaPortas = null, // visita.escala_slam_metros_portas - coluna "porta" (planta métrica) na matriz
   mapaUrl = null, // visita.mapa_url (mapa.msg no R2) - sem isso, medição fica indisponível
   apiMedicaoUrl = null, // base da API (ver api_medicao.py) - ex.: https://api.obra360.exemplo
   apiMedicaoKey = null, // valor de MEDICAO_API_KEY da API (header X-Api-Key); null = sem auth
@@ -176,6 +177,7 @@ export default function PanoramaViewer({
   const modoCompararRef = useRef(modoComparar)
   const trenaMRef = useRef(trenaM)
   const alturaCameraMRef = useRef(alturaCameraM)
+  const escalaPortasRef = useRef(escalaPortas)
   const mapaUrlRef = useRef(mapaUrl)
   const apiMedicaoUrlRef = useRef(apiMedicaoUrl)
   const apiMedicaoKeyRef = useRef(apiMedicaoKey)
@@ -218,6 +220,7 @@ export default function PanoramaViewer({
   }, [modoComparar])
   useEffect(() => { trenaMRef.current = trenaM }, [trenaM])
   useEffect(() => { alturaCameraMRef.current = alturaCameraM }, [alturaCameraM])
+  useEffect(() => { escalaPortasRef.current = escalaPortas }, [escalaPortas])
   useEffect(() => {
     mostrarLandmarksRef.current = mostrarLandmarks
     atualizarLandmarksRef.current()  // liga/desliga o overlay no quadro atual
@@ -692,6 +695,7 @@ export default function PanoramaViewer({
       const corpo = { mapa_url: mapaUrlAtual, pontos: pontosParaEnviar }
       if (comparando) {
         if (escalaSlamMetrosRef.current) corpo.escala_clique = escalaSlamMetrosRef.current
+        if (escalaPortasRef.current) corpo.escala_portas = escalaPortasRef.current
         if (trenaMRef.current) corpo.trena_m = trenaMRef.current
         corpo.altura_camera_m = alturaCameraMRef.current || 2.0
       } else if (calibrando) {

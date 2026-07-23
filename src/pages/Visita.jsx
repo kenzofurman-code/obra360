@@ -844,6 +844,7 @@ export default function Visita() {
               modoCalibrar={modoCalibrar}
               modoComparar={modoComparar}
               trenaM={parseFloat(trenaInput.replace(',', '.')) || null}
+              escalaPortas={visita.escala_slam_metros_portas || null}
               mapaUrl={visita.mapa_url || null}
               apiMedicaoUrl={apiMedicaoUrl}
               apiMedicaoKey={apiMedicaoKey}

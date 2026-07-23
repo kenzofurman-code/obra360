@@ -382,7 +382,7 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
         # trajetoria em paginas nao-quadradas - ver alinhar_ponto)
         pdf_path = firebase_client.baixar_pdf(planta_url)
         vaos_json = os.path.join(tmp_dir, 'vaos.json')
-        vaos, aspecto = run_pdf_extractor(pdf_path, vaos_json)
+        vaos, aspecto, pagina = run_pdf_extractor(pdf_path, vaos_json)
         # Ambientes (nome + area m² -> raio de alcance) do mesmo PDF, pra associar
         # cada waypoint ao comodo onde foi tirado (ver extrair_ambientes.py e a
         # discussao com o Pedro em 2026-07-14 sobre progresso de obra por ambiente).
@@ -417,6 +417,16 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
         # 6. Atualiza Firestore (1 escrita so). Salva o aspecto da planta tambem -
         # o site (Visita.jsx) precisa do MESMO valor pra desfazer a transformacao
         # sem distorcer (senao teria que re-parsear o PDF no navegador so pra isso).
+        # Escala metros/unid-SLAM pela planta metrica (portas do PDF) - calibracao
+        # automatica sem clique, alimenta a coluna "porta" da matriz /comparar no
+        # site. None se o PDF nao tiver tabela de esquadrias (escala_pts_por_m).
+        from processar_vistoria import escala_metros_por_portas
+        escala_portas = escala_metros_por_portas(
+            pagina, calibracao['path_scale'],
+            calibracao.get('escala_x', 1.0), calibracao.get('escala_y', 1.0))
+        if escala_portas:
+            print(f"[Pipeline] Escala por porta (planta metrica): {escala_portas:.4f} m/unid SLAM")
+
         dados = {'status': 'processado',
                  'planta_aspecto': aspecto,
                  'ancora1': calibracao['ancora1'],
@@ -424,6 +434,7 @@ def processar_visita(visita_id, video_local=None, corte_inicial_seg=None,
                  'path_scale': calibracao['path_scale'],
                  'escala_x': calibracao.get('escala_x', 1.0),
                  'escala_y': calibracao.get('escala_y', 1.0),
+                 'escala_slam_metros_portas': escala_portas,
                  'espelhar_caminho': calibracao['espelhar_caminho'],
                  'ambientes': ambientes,
                  # Selo de qualidade (ver mesmo campo em processar_vistoria.py) -

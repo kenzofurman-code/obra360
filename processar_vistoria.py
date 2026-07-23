@@ -611,15 +611,16 @@ def run_pdf_extractor(pdf_path: str, output_json: str):
     """
     from extrair_portas import extrair
     print(f"\n[Pipeline] Etapa 2/3: Extraindo vãos de portas do PDF (geometria de arco)...")
-    vaos, n_arcs, (W, H) = extrair(pdf_path)
+    vaos, n_arcs, (W, H), escala_ppm = extrair(pdf_path)
     if not vaos:
         raise RuntimeError("Nenhuma porta com arco de abertura detectado no PDF.")
     aspecto = (H / W) if W > 0 else 1.0
     with open(output_json, 'w', encoding='utf-8') as f:
-        json.dump({"pagina": {"largura": W, "altura": H, "aspecto": aspecto}, "vaos": vaos}, f)
+        json.dump({"pagina": {"largura": W, "altura": H, "aspecto": aspecto,
+                              "escala_pts_por_m": escala_ppm}, "vaos": vaos}, f)
     print(f"[Pipeline] Vãos extraídos: {len(vaos)} portas (de {n_arcs} arcos únicos) -> "
           f"{output_json} (aspecto da página: {aspecto:.4f})")
-    return vaos, aspecto
+    return vaos, aspecto, {'largura': W, 'altura': H, 'escala_pts_por_m': escala_ppm}
 
 
 def run_ambientes_extractor(pdf_path: str, output_json: str):
@@ -896,6 +897,28 @@ def ajustar_escala_eixos(raw_waypoints: list, vaos: list, ancora1: dict,
     ex = min(hi, max(lo, ex))
     ey = min(hi, max(lo, ey))
     return float(ex), float(ey)
+
+
+def escala_metros_por_portas(pagina: dict, path_scale: float,
+                             escala_x: float = 1.0, escala_y: float = 1.0):
+    """
+    Escala metros/unid-SLAM derivada da planta METRICA (2026-07-23). A planta e'
+    metrica via escala_pts_por_m (pontos PDF por metro, de extrair_portas, obtido
+    da razao raio_do_arco/largura_m das esquadrias). Como path_scale mapeia SLAM
+    -> planta-normalizada e W (pts) x escala_pts_por_m converte normalizada ->
+    metros:  metros/unid = path_scale * sqrt(escala_x*escala_y) * W / escala_pts_por_m.
+
+    Usa a media geometrica de escala_x/escala_y (a anisotropia e' pequena, ~1%,
+    ver calibrar_ancora_portas) pra um escalar unico isotropico. Retorna None se
+    a pagina nao tiver escala_pts_por_m (PDF sem tabela de esquadrias casando).
+    """
+    pag = pagina or {}
+    eppm = pag.get('escala_pts_por_m')
+    W = pag.get('largura')
+    if not eppm or not W:
+        return None
+    iso = float(path_scale) * math.sqrt(max(float(escala_x) * float(escala_y), 1e-12))
+    return float(iso * W / eppm)
 
 
 def run_map_matching(raw_waypoints: list, vaos: list,
@@ -1192,7 +1215,7 @@ def main():
 
     pdf_path = firebase_client.baixar_pdf(planta_url)
     vaos_json = os.path.join(tmp_dir, 'vaos.json')
-    vaos, aspecto = run_pdf_extractor(pdf_path, vaos_json)
+    vaos, aspecto, _pagina = run_pdf_extractor(pdf_path, vaos_json)
     ambientes_json = os.path.join(tmp_dir, 'ambientes.json')
     ambientes = run_ambientes_extractor(pdf_path, ambientes_json)
     os.unlink(pdf_path)  # Limpa PDF temporário

@@ -79,7 +79,7 @@ def main():
     tmp_dir_local = os.path.dirname(os.path.abspath(args.traj_completa))
     pdf_path = firebase_client.baixar_pdf(planta_url)
     vaos_json = os.path.join(tmp_dir_local, 'vaos_reparo.json')
-    vaos, aspecto = run_pdf_extractor(pdf_path, vaos_json)
+    vaos, aspecto, pagina = run_pdf_extractor(pdf_path, vaos_json)
     ambientes_json = os.path.join(tmp_dir_local, 'ambientes_reparo.json')
     ambientes = run_ambientes_extractor(pdf_path, ambientes_json)
     os.unlink(pdf_path)

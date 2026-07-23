@@ -364,7 +364,22 @@ def extrair(pdf_path, limite_x=None, r_min=25, r_max=130, span_min=55, cap_rotul
         print(f"[extrair_portas] [AVISO] deteccao de portas de correr (tabela de esquadrias) "
               f"nao disponivel neste PDF ({e}) - seguindo so com portas de arco.")
 
-    return vaos, len(uniq), (W, H)
+    # Escala do desenho: pontos PDF por metro = mediana de raio_do_arco/largura_m
+    # dos codigos que tem arco E estao na tabela de esquadrias. Torna a planta
+    # METRICA - usado na calibracao por porta (metros/unid SLAM = path_scale * W /
+    # escala_pts_por_m). None se nao houver tabela de esquadrias casando com arcos.
+    escala_pts_por_m = None
+    try:
+        esq = _parsear_esquadrias(page)
+        razoes = [a['r'] / esq[name]['largura_m']
+                  for (lx, ly, name), a in pares
+                  if name in esq and esq[name].get('largura_m', 0) > 0]
+        if razoes:
+            escala_pts_por_m = float(np.median(razoes))
+    except Exception:
+        pass
+
+    return vaos, len(uniq), (W, H), escala_pts_por_m
 
 
 def main():
@@ -374,8 +389,9 @@ def main():
     ap.add_argument("--limite-x", type=float, default=None,
                     help="ignora conteudo a direita deste x em pts (carimbo/tabelas)")
     args = ap.parse_args()
-    vaos, n_arcs, (W, H) = extrair(args.pdf, args.limite_x)
-    saida = {"pagina": {"largura": W, "altura": H, "aspecto": H / W}, "vaos": vaos}
+    vaos, n_arcs, (W, H), escala_ppm = extrair(args.pdf, args.limite_x)
+    saida = {"pagina": {"largura": W, "altura": H, "aspecto": H / W,
+                        "escala_pts_por_m": escala_ppm}, "vaos": vaos}
     with open(args.out, "w", encoding="utf-8") as f:
         json.dump(saida, f, indent=1)
     print(f"pagina {W:.0f}x{H:.0f} | arcos unicos: {n_arcs} | portas associadas: {len(vaos)}")
