@@ -662,6 +662,19 @@ export default function PanoramaViewer({
         ponto.pos_w = quadroAtual.pose_raw.pos_w
         ponto.quat_wc = quadroAtual.pose_raw.quat_wc
       }
+      // Modo comparar: anexa a imagem do quadro + um VIZINHO (~8 quadros à
+      // frente, baseline pequeno) pro fallback epipolar da API. Ver /comparar.
+      if (modoCompararRef.current && quadroAtual.arquivo) {
+        ponto.img_url = resolveUrl(quadroAtual.arquivo)
+        const lista = quadrosRef.current
+        const N = 8
+        let jv = indiceAtualExibido + N
+        if (jv >= lista.length) jv = indiceAtualExibido - N
+        const qv = lista[jv]
+        if (qv && qv.arquivo && qv.t != null) {
+          ponto.vizinho = { t: qv.t, img_url: resolveUrl(qv.arquivo) }
+        }
+      }
       pontosMedicao.push(ponto)
 
       if (pontosMedicao.length < 2) return

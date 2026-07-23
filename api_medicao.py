@@ -106,6 +106,26 @@ def _baixar_mapa(mapa_url):
     return _cache_landmarks[mapa_url]
 
 
+_cache_imagens = {}  # url -> np.ndarray BGR (cache em memoria, poucas imagens por sessao)
+
+
+def _baixar_imagem(url):
+    """Baixa (e cacheia em memoria) uma foto equiretangular do R2 pra o
+    fallback epipolar. Retorna np.ndarray BGR ou None se falhar."""
+    if url in _cache_imagens:
+        return _cache_imagens[url]
+    import cv2
+    try:
+        r = requests.get(url, timeout=60)
+        r.raise_for_status()
+        arr = np.frombuffer(r.content, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    except Exception:
+        img = None
+    _cache_imagens[url] = img
+    return img
+
+
 def _pose_do_ponto(ponto):
     """Converte {pos_w:[x,y,z], quat_wc:[x,y,z,w]} (vindo do pose_raw do
     manifest.json, ja' calculado por gerar_quadros.py) num dict compativel
@@ -270,6 +290,34 @@ def comparar():
             medicoes['robusto'] = {'erro': '; '.join(x['motivo'] for x in (b1, b2) if not x['sucesso'])}
     except Exception as e:
         medicoes['robusto'] = {'erro': str(e)}
+
+    # epipolar (plane-sweep fotometrico) - so' se os pontos trouxerem img_url +
+    # vizinho{t,img_url} (frontend resolve do manifest e passa). Cada ponto tem
+    # seu proprio quadro vizinho (baseline pequeno) - ver medir_por_epipolar_fallback.
+    if all(p.get('img_url') and (p.get('vizinho') or {}).get('img_url') for p in pontos):
+        try:
+            from medir_panorama import medir_por_epipolar_fallback
+            pts3d, falha = [], None
+            for i, p in enumerate(pontos):
+                viz = p['vizinho']
+                img1 = _baixar_imagem(p['img_url'])
+                img2 = _baixar_imagem(viz['img_url'])
+                kf2 = pose_no_frame_do_mapa(keyframes, float(viz['t']))
+                if img1 is None or img2 is None or kf2 is None:
+                    falha = f"ponto {i+1}: imagem/pose do vizinho indisponivel"; break
+                r = medir_por_epipolar_fallback(kfs[i], p['u'], p['v'], img1, kf2, img2)
+                if not r['sucesso']:
+                    falha = f"ponto {i+1}: {r['motivo']}"; break
+                pts3d.append(r['ponto3d'])
+            if falha:
+                medicoes['epipolar'] = {'erro': falha}
+            else:
+                medicoes['epipolar'] = {'dist_slam': float(np.linalg.norm(pts3d[0] - pts3d[1])),
+                                        'confianca': 'epipolar'}
+        except Exception as e:
+            medicoes['epipolar'] = {'erro': str(e)}
+    else:
+        medicoes['epipolar'] = {'erro': 'sem img_url/vizinho - frontend nao enviou as 2 imagens'}
 
     # ── CALIBRACOES (escala metros/unid SLAM) ──
     calibracoes = {}
