@@ -67,6 +67,10 @@ export default function Visita() {
   // SLAM subido pro R2 pelo worker.py) - vistorias antigas ou sem SLAM não tem mapa_url,
   // o botão fica desabilitado nesse caso (ver JSX abaixo).
   const [modoMedicao, setModoMedicao] = useState(false)
+  // Overlay de landmarks (frente 1): desenha os pontos 3D do mapa sobre a foto,
+  // pra guiar onde da' pra medir (area densa) vs area lisa (sem ponto). Preferencia
+  // de visualizacao, nao persiste no Firestore. Precisa de mapa_url + API de medicao.
+  const [mostrarLandmarks, setMostrarLandmarks] = useState(false)
   const [modoCalibrar, setModoCalibrar] = useState(false)
   const [larguraCalibracaoInput, setLarguraCalibracaoInput] = useState('') // string controlada do input
   const [resultadoMedicaoAtual, setResultadoMedicaoAtual] = useState(null) // último resultado, pra exibir no painel
@@ -832,6 +836,7 @@ export default function Visita() {
               larguraCalibracaoM={parseFloat(larguraCalibracaoInput.replace(',', '.')) || null}
               onResultadoMedicao={onResultadoMedicao}
               onErroMedicao={onErroMedicao}
+              mostrarLandmarks={mostrarLandmarks}
             />
           ) : (
             <Player360
@@ -986,6 +991,26 @@ export default function Visita() {
                 Fechar
               </button>
             </div>
+
+            {/* Overlay de landmarks (guia de medição) */}
+            <label
+              className={`flex items-center justify-between gap-2 ${visita?.mapa_url ? 'cursor-pointer' : 'opacity-40 cursor-not-allowed'}`}
+              title={visita?.mapa_url ? '' : 'Disponível só em vistorias com mapa 3D (mapa_url)'}
+            >
+              <span className="text-[11px] font-semibold text-aco-300 font-mono">
+                Mostrar pontos 3D (guia de medição)
+              </span>
+              <input
+                type="checkbox"
+                disabled={!visita?.mapa_url}
+                checked={mostrarLandmarks}
+                onChange={e => setMostrarLandmarks(e.target.checked)}
+                className="accent-sinal-500 w-4 h-4"
+              />
+            </label>
+            <p className="text-[9px] text-aco-500 font-mono leading-normal -mt-2">
+              Marca em ciano onde há pontos 3D do mapa. Denso = bom pra medir; vazio = parede lisa, medida pouco confiável.
+            </p>
 
             {/* Playback Speed */}
             <div className="space-y-1.5">

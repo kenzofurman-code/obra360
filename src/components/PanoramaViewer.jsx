@@ -153,6 +153,7 @@ export default function PanoramaViewer({
   larguraCalibracaoM = null, // largura real (m) do vão usado pra calibrar, quando modoCalibrar=true
   onResultadoMedicao, // (resultado, { calibrando }) => void - chamado com a resposta da API
   onErroMedicao, // (mensagem) => void - erro local (sem pose_raw, sem mapaUrl, etc.) antes mesmo de chamar a API
+  mostrarLandmarks = false, // true = desenha os landmarks do mapa sobre a foto (guia de onde da' pra medir; usa /landmarks_frame)
 }) {
   const containerRef = useRef(null)
   const fakePlayerRef = useRef(null)
@@ -176,6 +177,10 @@ export default function PanoramaViewer({
   const larguraCalibracaoMRef = useRef(larguraCalibracaoM)
   const onResultadoMedicaoRef = useRef(onResultadoMedicao)
   const onErroMedicaoRef = useRef(onErroMedicao)
+  const mostrarLandmarksRef = useRef(mostrarLandmarks)
+  // atribuida pelo effect de cena - refaz o overlay de landmarks do quadro atual
+  // (ao ligar o toggle sem trocar de foto). Ver mostrarLandmarks/atualizarLandmarks.
+  const atualizarLandmarksRef = useRef(() => {})
   // atribuída pelo effect de cena (abaixo) - permite limpar os marcadores/pontos
   // de medição em andamento sempre que o modo muda, SEM precisar recriar a cena
   // inteira (o effect de cena só depende de quadros/manifestUrl/autoplay).
@@ -201,6 +206,10 @@ export default function PanoramaViewer({
     modoCalibrarRef.current = modoCalibrar
     limparMedicaoRef.current()
   }, [modoCalibrar])
+  useEffect(() => {
+    mostrarLandmarksRef.current = mostrarLandmarks
+    atualizarLandmarksRef.current()  // liga/desliga o overlay no quadro atual
+  }, [mostrarLandmarks])
   // headingOffset mantido na assinatura por paridade com Player360 (orienta a planta 2D,
   // não o vídeo/panorama - ver comentário equivalente em Player360.jsx)
   void headingOffset
@@ -274,6 +283,30 @@ export default function PanoramaViewer({
     sphereB.renderOrder = 0
     scene.add(sphereA)
     scene.add(sphereB)
+
+    // --- Overlay de landmarks (frente 1, guia de clique) ---
+    // Nuvem de pontos do mapa reprojetada na foto (endpoint /landmarks_frame).
+    // Mostra onde HA' pontos 3D densos (bom pra medir) vs areas lisas (sem ponto).
+    // Pontos num raio menor (470 < 500 da esfera) pra ficarem na frente da textura.
+    const landmarksGeo = new THREE.BufferGeometry()
+    landmarksGeo.setAttribute('position', new THREE.Float32BufferAttribute([], 3))
+    const landmarksMat = new THREE.PointsMaterial({
+      color: 0x22d3ee, size: 4, sizeAttenuation: false,
+      transparent: true, opacity: 0.85, depthTest: false,
+    })
+    const landmarksObj = new THREE.Points(landmarksGeo, landmarksMat)
+    landmarksObj.renderOrder = 2 // sempre por cima da foto e da fita
+    landmarksObj.visible = false
+    landmarksObj.frustumCulled = false
+    scene.add(landmarksObj)
+
+    // (u,v) equiretangular -> ponto 3D na esfera (INVERSO exato de pegarUVDoClique,
+    // pra os pontos cairem exatamente onde os cliques de medicao caem). r=470.
+    const uvParaPonto = (u, v, r = 470) => {
+      const lon = 2 * Math.PI * u
+      const sv = Math.sin(Math.PI * v)
+      return [r * Math.cos(lon) * sv, -r * Math.cos(Math.PI * v), r * Math.sin(lon) * sv]
+    }
 
     const textureLoader = new THREE.TextureLoader()
     textureLoader.setCrossOrigin('anonymous')
@@ -365,7 +398,45 @@ export default function PanoramaViewer({
         const q = quadrosRef.current[i]
         if (q) carregarTextura(resolveUrl(q.arquivo)).catch(() => {})
       })
+
+      atualizarLandmarks() // refaz o overlay de landmarks pro novo quadro (se ligado)
     }
+
+    // Overlay de landmarks (frente 1): busca /landmarks_frame do quadro atual e
+    // desenha os pontos na foto. So' roda com o toggle ligado + mapaUrl/apiUrl.
+    let landmarksReqId = 0
+    const atualizarLandmarks = () => {
+      const q = quadrosRef.current[indiceAtualExibido]
+      const apiUrl = apiMedicaoUrlRef.current
+      const mapa = mapaUrlRef.current
+      if (!mostrarLandmarksRef.current || !apiUrl || !mapa || !q || q.t == null) {
+        landmarksObj.visible = false
+        return
+      }
+      const reqId = ++landmarksReqId
+      const headers = { 'Content-Type': 'application/json' }
+      if (apiMedicaoKeyRef.current) headers['X-Api-Key'] = apiMedicaoKeyRef.current
+      fetch(`${apiUrl}/landmarks_frame`, {
+        method: 'POST', headers,
+        body: JSON.stringify({ mapa_url: mapa, t: q.t }),
+      })
+        .then((r) => r.json())
+        .then((json) => {
+          if (!active || reqId !== landmarksReqId || !mostrarLandmarksRef.current) return
+          const pts = json?.pontos || []
+          const pos = new Float32Array(pts.length * 3)
+          for (let i = 0; i < pts.length; i++) {
+            const [x, y, z] = uvParaPonto(pts[i].u, pts[i].v)
+            pos[i * 3] = x; pos[i * 3 + 1] = y; pos[i * 3 + 2] = z
+          }
+          landmarksGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3))
+          landmarksGeo.attributes.position.needsUpdate = true
+          landmarksGeo.computeBoundingSphere()
+          landmarksObj.visible = true
+        })
+        .catch(() => { /* silencioso - overlay e' so' um guia visual */ })
+    }
+    atualizarLandmarksRef.current = atualizarLandmarks
 
     // Busca binária pelo quadro com t mais próximo do tempo alvo (lista ordenada por t)
     const encontrarIndicePorTempo = (t) => {
@@ -853,6 +924,9 @@ export default function PanoramaViewer({
       geometry.dispose()
       matA.dispose()
       matB.dispose()
+      landmarksGeo.dispose()
+      landmarksMat.dispose()
+      atualizarLandmarksRef.current = () => {}
       if (hoverMesh) {
         hoverMesh.geometry.dispose()
         hoverMesh.material.dispose()
