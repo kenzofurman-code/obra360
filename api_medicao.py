@@ -567,16 +567,31 @@ def landmarks_frame():
     if not mapa_url or t is None:
         return jsonify(erro="Informe mapa_url e t (tempo do quadro)."), 400
     try:
+        import numpy as np
+        from medir_panorama import keyframes_ordenados
         keyframes, landmarks_pos = _baixar_mapa(mapa_url)
         kf = pose_no_frame_do_mapa(keyframes, float(t))
         if kf is None:
             return jsonify(erro=f"Sem keyframe do mapa perto de t={t}s."), 200
-        us, vs, dist = reprojetar_landmarks(kf, landmarks_pos)
-        # so' os na frente/visiveis: dist finita e positiva (reprojetar ja'
-        # devolve tudo; filtra os muito longe que sao ruido)
-        import numpy as np
-        vis = dist < np.percentile(dist, 95)
-        idx = np.where(vis)[0]
+        # CO-VISIBILIDADE (2026-07-23): em vez de reprojetar o mapa INTEIRO (que
+        # desenha landmarks de outros comodos atraves da parede, sem teste de
+        # oclusao), usa so' os landmarks que os keyframes PROXIMOS observaram de
+        # fato (kf['lm_idx']). Une o keyframe mais proximo + 2 vizinhos de cada
+        # lado pra dar densidade sem perder o carater "so' o que esta vista viu".
+        kf_list, ts_rel = keyframes_ordenados(keyframes)
+        i = int(np.searchsorted(ts_rel, float(t)))
+        covis = set()
+        for j in range(max(0, i - 2), min(len(kf_list), i + 3)):
+            lm_idx = kf_list[j].get('lm_idx')
+            if lm_idx is not None and len(lm_idx):
+                covis.update(lm_idx.tolist())
+        if covis:
+            sel = np.array(sorted(covis), dtype=int)
+            pos_sel = landmarks_pos[sel]
+        else:
+            pos_sel = landmarks_pos  # fallback (mapa em cache antigo, sem lm_idx)
+        us, vs, dist = reprojetar_landmarks(kf, pos_sel)
+        idx = np.where(np.isfinite(dist) & (dist > 0))[0]
         if len(idx) > max_pontos:
             idx = idx[np.linspace(0, len(idx) - 1, max_pontos).astype(int)]
         pts = [{'u': round(float(us[k]), 5), 'v': round(float(vs[k]), 5),

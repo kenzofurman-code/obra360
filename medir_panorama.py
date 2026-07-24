@@ -88,6 +88,7 @@ def carregar_mapa(caminho_msg):
         print("[AVISO] Esperava 'keyframes'/'keyfrms' e 'landmarks' - confira o formato do arquivo.")
 
     keyframes = {}
+    lm_ids_por_kf = {}  # id do keyframe -> lista crua de lm_ids observados (mapeada abaixo)
     for kf_id, kf in keyframes_raw.items():
         trans_cw = np.array(kf["trans_cw"], dtype=float).reshape(3)
         rot_cw = Rot.from_quat(kf["rot_cw"]).as_matrix()
@@ -98,14 +99,28 @@ def carregar_mapa(caminho_msg):
             "pos_w": pos_w,
             "rot_wc": rot_wc,
         }
+        lm_ids_por_kf[int(kf_id)] = kf.get("lm_ids") or []
 
     landmarks_ids = []
     landmarks_pos = []
+    id2idx = {}  # id do landmark -> indice em landmarks_pos
     for lm_id, lm in landmarks_raw.items():
+        id2idx[int(lm_id)] = len(landmarks_ids)
         landmarks_ids.append(int(lm_id))
         landmarks_pos.append(lm["pos_w"])
 
     landmarks_pos = np.array(landmarks_pos, dtype=float) if landmarks_pos else np.zeros((0, 3))
+
+    # Co-visibilidade: pra cada keyframe, os INDICES (em landmarks_pos) dos
+    # landmarks que ELE observou de fato (lm_ids >= 0 e presentes no mapa - alguns
+    # foram culled). Permite um overlay "so' o que aquela vista viu", sem os
+    # landmarks de outros comodos que reprojetam atraves da parede (sem teste de
+    # oclusao). Ver /landmarks_frame em api_medicao.py.
+    for kf_id, kf in keyframes.items():
+        crus = lm_ids_por_kf.get(kf_id, [])
+        idxs = [id2idx[int(l)] for l in crus if l is not None and int(l) >= 0 and int(l) in id2idx]
+        kf["lm_idx"] = np.array(sorted(set(idxs)), dtype=int)
+
     print(f"[Mapa] {len(keyframes)} keyframes, {len(landmarks_pos)} landmarks carregados de {caminho_msg}")
     return keyframes, landmarks_ids, landmarks_pos
 
